@@ -92,6 +92,7 @@ LINK_LIBRARY += -lkvsSupportExtendedFileFormat \
 -lvtkFiltersCore-$(VTK_VERSION) \
 -lvtkIOCore-$(VTK_VERSION) \
 -lvtkIOGeometry-$(VTK_VERSION) \
+-lvtkIONetCDF-$(VTK_VERSION) \
 -lvtkIOCGNSReader-$(VTK_VERSION) \
 -lvtkIOEnSight-$(VTK_VERSION) \
 -lvtkFiltersGeneral-$(VTK_VERSION) \
@@ -107,7 +108,16 @@ LINK_LIBRARY += -lkvsSupportExtendedFileFormat \
 -lvtkloguru-$(VTK_VERSION) \
 -lvtkIOCore-$(VTK_VERSION) \
 -lvtkCommonSystem-$(VTK_VERSION) \
--lvtkCommonMisc-$(VTK_VERSION)
+-lvtkCommonMisc-$(VTK_VERSION) \
+-lvtkexpat-$(VTK_VERSION)\
+-lvtkzlib-$(VTK_VERSION)\
+-lvtkdoubleconversion-$(VTK_VERSION)\
+-lvtklzma-$(VTK_VERSION)\
+-lvtklz4-$(VTK_VERSION)\
+-lvtknetcdf-$(VTK_VERSION)\
+-lvtkhdf5_hl-$(VTK_VERSION)\
+-lvtkhdf5-$(VTK_VERSION)\
+-lvtkpugixml-$(VTK_VERSION)
 
 DEFINITIONS += -DEXTEND_FILE_FORMAT
 endif

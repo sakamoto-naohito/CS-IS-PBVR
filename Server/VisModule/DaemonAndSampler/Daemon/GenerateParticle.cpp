@@ -682,13 +682,14 @@ void generate_volume(
     vismodule::VolumeObjectBase*& volume
 )
 {
-    size_t found_kvsml = file_path.find(".kvsml");
-    size_t found_vtm   = file_path.find(".vtm");
-    size_t found_vtu   = file_path.find(".vtu");
-    size_t found_vti   = file_path.find(".vti");
-    size_t found_inp   = file_path.find(".inp");
-    size_t found_pvtu  = file_path.find(".pvtu");
-    size_t found_case  = file_path.find(".case");
+    std::size_t found_kvsml = file_path.find(".kvsml");
+    std::size_t found_vtm   = file_path.find(".vtm");
+    std::size_t found_vtu   = file_path.find(".vtu");
+    std::size_t found_vti   = file_path.find(".vti");
+    std::size_t found_inp   = file_path.find(".inp");
+    std::size_t found_pvtu  = file_path.find(".pvtu");
+    std::size_t found_case  = file_path.find(".case");
+    std::size_t found_nc    = file_path.find(".nc");
 
     if ( found_kvsml != std::string::npos )
     {
@@ -705,25 +706,26 @@ void generate_volume(
         // structured
         if( mvp.m_file_type == 3 )
         {
-            volume = new vismodule::StructuredVolumeImporter( mvp.m_file_path, time_step, sub_volume_id );
+            volume = new vismodule::StructuredVolumeImporter( file_path, time_step, sub_volume_id );
         }
         // unstructured
         if( mvp.m_file_type == 4 )
         {
-            volume = new vismodule::UnstructuredVolumeImporter( mvp.m_file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
+            volume = new vismodule::UnstructuredVolumeImporter( file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
         }
     }
     else if ( found_vtu  != std::string::npos ||
               found_inp  != std::string::npos ||
               found_pvtu != std::string::npos ||
-              found_case != std::string::npos
+              found_case != std::string::npos ||
+              found_nc   != std::string::npos
             )
     {
-        volume = new vismodule::UnstructuredVolumeImporter( mvp.m_file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
+        volume = new vismodule::UnstructuredVolumeImporter( file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
     }
     else if ( found_vti != std::string::npos )
     {
-        volume = new vismodule::StructuredVolumeImporter( mvp.m_file_path, time_step, sub_volume_id );
+        volume = new vismodule::StructuredVolumeImporter( file_path, time_step, sub_volume_id );
     }
 #endif
 
