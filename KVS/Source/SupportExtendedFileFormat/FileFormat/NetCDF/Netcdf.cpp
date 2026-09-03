@@ -16,6 +16,8 @@
  */
 #include "Netcdf.h"
 
+#include <algorithm>
+#include <cctype>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -24,23 +26,36 @@
 
 #include <kvs/Message>
 #include <kvs/Type>
+#include <kvs/extendedfileformat/RectilinearGridToUnstructured>
 #include <kvs/extendedfileformat/VtkXmlImageData>
+#include <kvs/extendedfileformat/VtkXmlPolyData>
 #include <kvs/extendedfileformat/VtkXmlRectilinearGrid>
 #include <kvs/extendedfileformat/VtkXmlStructuredGrid>
 #include <kvs/extendedfileformat/VtkXmlUnstructuredGrid>
+#include <vtkAlgorithm.h>
 #include <vtkCallbackCommand.h>
+#include <vtkCellDataToPointData.h>
 #include <vtkCellType.h>
 #include <vtkCommand.h>
 #include <vtkDataArray.h>
 #include <vtkDataSet.h>
 #include <vtkErrorCode.h>
 #include <vtkFloatArray.h>
+#include <vtkImageData.h>
+#include <vtkInformation.h>
 #include <vtkNetCDFCFReader.h>
+#include <vtkNetCDFPOPReader.h>
+#include <vtkNetCDFReader.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
+#include <vtkPolyData.h>
+#include <vtkRectilinearGrid.h>
+#include <vtkStreamingDemandDrivenPipeline.h>
+#include <vtkStructuredGrid.h>
 #include <vtkStringArray.h>
 #include <vtkUnstructuredGrid.h>
+#include <vtk_netcdf.h>
 
 namespace kvs
 {
@@ -253,11 +268,89 @@ void ThrowNetcdfDiagnostics( const NetcdfDiagnostics& diagnostics )
     }
 }
 
+/** 文字列をASCII小文字へ変換する。 */
+std::string Lowercase( std::string value )
+{
+    std::transform( value.begin(), value.end(), value.begin(),
+                    []( unsigned char c ) { return static_cast<char>( std::tolower( c ) ); } );
+    return value;
+}
+
+/** 次元表記に含まれる次元数を返す。 */
+std::size_t DimensionRank( const std::string& dimensions )
+{
+    if ( dimensions.size() < 2 ) return 0;
+    return 1 + static_cast<std::size_t>(
+                   std::count( dimensions.begin(), dimensions.end(), ',' ) );
+}
+
+/** VTKデータセットのセルデータを点データへ変換する。 */
+vtkSmartPointer<vtkDataSet> PointCenteredDataSet( vtkDataSet* input )
+{
+    if ( !input ) return nullptr;
+    vtkNew<vtkCellDataToPointData> converter;
+    converter->SetInputData( input );
+    converter->PassCellDataOff();
+    converter->Update();
+    vtkSmartPointer<vtkDataSet> output = vtkDataSet::SafeDownCast( converter->GetOutput() );
+    return output;
+}
+
+/** VTKデータセットの実際の型に対応するKVSファイル形式ラッパーを生成する。 */
+std::shared_ptr<kvs::FileFormatBase> WrapDataSet( vtkDataSet* input )
+{
+    auto data = PointCenteredDataSet( input );
+    if ( !data || data->GetNumberOfPoints() == 0 || data->GetNumberOfCells() == 0 )
+    {
+        throw std::runtime_error( "the VTK NetCDF reader returned an empty data set" );
+    }
+    if ( auto* image = vtkImageData::SafeDownCast( data ) )
+    {
+        return std::make_shared<VtkXmlImageData>( image );
+    }
+    if ( auto* rectilinear = vtkRectilinearGrid::SafeDownCast( data ) )
+    {
+        return std::make_shared<VtkXmlRectilinearGrid>( rectilinear );
+    }
+    if ( auto* structured = vtkStructuredGrid::SafeDownCast( data ) )
+    {
+        return std::make_shared<VtkXmlStructuredGrid>( structured );
+    }
+    if ( auto* unstructured = vtkUnstructuredGrid::SafeDownCast( data ) )
+    {
+        return std::make_shared<VtkXmlUnstructuredGrid>( unstructured );
+    }
+    if ( auto* poly = vtkPolyData::SafeDownCast( data ) )
+    {
+        return std::make_shared<VtkXmlPolyData>( poly );
+    }
+    throw std::runtime_error( std::string( "unsupported VTK NetCDF output type: " ) +
+                              data->GetClassName() );
+}
+
+/** VTKが公開する先頭の物理時刻を更新時刻として指定する。 */
+void SelectFirstTimeStep( vtkAlgorithm* reader )
+{
+    reader->UpdateInformation();
+    vtkInformation* output_information = reader->GetOutputInformation( 0 );
+    if ( output_information &&
+         output_information->Has( vtkStreamingDemandDrivenPipeline::TIME_STEPS() ) &&
+         output_information->Length( vtkStreamingDemandDrivenPipeline::TIME_STEPS() ) > 0 )
+    {
+        const double first_time =
+            output_information->Get( vtkStreamingDemandDrivenPipeline::TIME_STEPS(), 0 );
+        output_information->Set( vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP(),
+                                 first_time );
+    }
+}
+
 class GearnNetcdfFormatAdapter : public NetcdfFormatAdapter
 {
 public:
     /// 対応形式名を返す。
     const char* name() const override { return "GEARN"; }
+    /// GEARN形式種別を返す。
+    NetcdfFormatType formatType() const override { return NetcdfFormatType::Gearn; }
     /// GEARNデータの変換先格子種別を返す。
     NetcdfGridType gridType() const override { return NetcdfGridType::UnstructuredGrid; }
 
@@ -446,6 +539,262 @@ public:
 
 };
 
+/** CF/COARDSファイルで最も高次元の物理量群を選択する。 */
+bool SelectHighestRankDimensions( vtkNetCDFReader* reader )
+{
+    if ( reader->UpdateMetaData() == 0 ) return false;
+    vtkStringArray* dimensions = reader->GetVariableDimensions();
+    std::string selected;
+    std::size_t selected_rank = 0;
+    for ( int i = 0; i < reader->GetNumberOfVariableArrays(); ++i )
+    {
+        const std::string current = dimensions->GetValue( i );
+        const std::size_t rank = DimensionRank( current );
+        if ( rank > selected_rank )
+        {
+            selected = current;
+            selected_rank = rank;
+        }
+    }
+    if ( selected.empty() ) return false;
+    reader->SetDimensions( selected.c_str() );
+    return true;
+}
+
+/** vtkNetCDFReaderの次元表記を外側から順に分解する。 */
+std::vector<std::string> ParseDimensionNames( const std::string& dimensions )
+{
+    const auto begin = dimensions.find( '(' );
+    const auto end = dimensions.rfind( ')' );
+    const std::size_t content_begin = begin == std::string::npos ? 0 : begin + 1;
+    const std::size_t content_end = end == std::string::npos ? dimensions.size() : end;
+    if ( content_begin >= content_end ) return {};
+
+    std::vector<std::string> names;
+    std::stringstream stream( dimensions.substr( content_begin, content_end - content_begin ) );
+    std::string name;
+    while ( std::getline( stream, name, ',' ) )
+    {
+        const auto first = name.find_first_not_of( " \t\r\n" );
+        const auto last = name.find_last_not_of( " \t\r\n" );
+        if ( first == std::string::npos ) return {};
+        names.push_back( name.substr( first, last - first + 1 ) );
+    }
+    return names;
+}
+
+/** NetCDFメタデータから最大ランク物理量の次元名を返す。 */
+std::vector<std::string> HighestRankDimensionNames( const NetcdfMetadata& metadata )
+{
+    std::string selected;
+    std::size_t selected_rank = 0;
+    for ( const auto& variable : metadata.variableDimensions() )
+    {
+        const std::size_t rank = DimensionRank( variable.second );
+        if ( rank > selected_rank )
+        {
+            selected = variable.second;
+            selected_rank = rank;
+        }
+    }
+    return ParseDimensionNames( selected );
+}
+
+/** 同名1次元NetCDF座標変数を、単位変換せずdouble値として読む。 */
+std::vector<double> ReadCoordinateVariable( int file, const std::string& dimension_name,
+                                            std::size_t expected_length )
+{
+    int dimension = -1;
+    std::size_t dimension_length = 0;
+    int variable = -1;
+    nc_type variable_type = NC_NAT;
+    int rank = 0;
+    int variable_dimensions[NC_MAX_VAR_DIMS] = {};
+    if ( nc_inq_dimid( file, dimension_name.c_str(), &dimension ) != NC_NOERR ||
+         nc_inq_dimlen( file, dimension, &dimension_length ) != NC_NOERR ||
+         dimension_length != expected_length )
+    {
+        throw std::runtime_error( "coordinate count does not match dimension " +
+                                  dimension_name );
+    }
+    if ( nc_inq_varid( file, dimension_name.c_str(), &variable ) != NC_NOERR ||
+         nc_inq_var( file, variable, nullptr, &variable_type, &rank, variable_dimensions,
+                     nullptr ) != NC_NOERR ||
+         rank != 1 || variable_dimensions[0] != dimension )
+    {
+        throw std::runtime_error( "dimension " + dimension_name +
+                                  " requires a same-named 1D coordinate variable" );
+    }
+    if ( variable_type == NC_CHAR
+#ifdef NC_STRING
+         || variable_type == NC_STRING
+#endif
+    )
+    {
+        throw std::runtime_error( "coordinate variable " + dimension_name +
+                                  " is not numeric" );
+    }
+
+    std::vector<double> coordinates( expected_length );
+    const int error = nc_get_var_double( file, variable, coordinates.data() );
+    if ( error != NC_NOERR )
+    {
+        throw std::runtime_error( "failed to read coordinate variable " + dimension_name +
+                                  ": " + nc_strerror( error ) );
+    }
+    return coordinates;
+}
+
+/** Generic NetCDFの3本の物理座標軸をx、y、z順で読む。 */
+std::vector<std::vector<double>> ReadGenericRectilinearCoordinates(
+    const std::string& filename, const std::vector<std::string>& dimension_names,
+    const int image_dimensions[3] )
+{
+    if ( dimension_names.size() != 4 || Lowercase( dimension_names[0] ) != "time" ||
+         Lowercase( dimension_names[1] ) != "z" ||
+         Lowercase( dimension_names[2] ) != "y" ||
+         Lowercase( dimension_names[3] ) != "x" )
+    {
+        throw std::runtime_error(
+            "generic rectilinear NetCDF requires dimensions (time, z, y, x)" );
+    }
+
+    int file = -1;
+    const int open_error = nc_open( filename.c_str(), NC_NOWRITE, &file );
+    if ( open_error != NC_NOERR )
+    {
+        throw std::runtime_error( std::string( "failed to open coordinates: " ) +
+                                  nc_strerror( open_error ) );
+    }
+    try
+    {
+        std::vector<std::vector<double>> coordinates( 3 );
+        coordinates[0] = ReadCoordinateVariable(
+            file, dimension_names[3], static_cast<std::size_t>( image_dimensions[0] ) );
+        coordinates[1] = ReadCoordinateVariable(
+            file, dimension_names[2], static_cast<std::size_t>( image_dimensions[1] ) );
+        coordinates[2] = ReadCoordinateVariable(
+            file, dimension_names[1], static_cast<std::size_t>( image_dimensions[2] ) );
+        nc_close( file );
+        return coordinates;
+    }
+    catch ( ... )
+    {
+        nc_close( file );
+        throw;
+    }
+}
+
+class CfNetcdfFormatAdapter : public NetcdfFormatAdapter
+{
+public:
+    const char* name() const override { return "VTK CF"; }
+    NetcdfFormatType formatType() const override { return NetcdfFormatType::Cf; }
+    NetcdfGridType gridType() const override { return NetcdfGridType::UnstructuredGrid; }
+    bool matches( const NetcdfMetadata& metadata ) const override
+    {
+        return Lowercase( metadata.globalAttribute( "Conventions" ) ).find( "cf-" ) !=
+               std::string::npos;
+    }
+    std::shared_ptr<kvs::FileFormatBase> read( const std::string& filename ) const override
+    {
+        vtkNew<vtkNetCDFCFReader> reader;
+        reader->SetFileName( filename.c_str() );
+        if ( !SelectHighestRankDimensions( reader ) )
+        {
+            throw std::runtime_error( "vtkNetCDFCFReader found no readable data variable" );
+        }
+        reader->SetOutputTypeToUnstructured();
+        SelectFirstTimeStep( reader );
+        reader->Update();
+        return WrapDataSet( vtkDataSet::SafeDownCast( reader->GetOutputDataObject( 0 ) ) );
+    }
+};
+
+class PopNetcdfFormatAdapter : public NetcdfFormatAdapter
+{
+public:
+    const char* name() const override { return "VTK POP"; }
+    NetcdfFormatType formatType() const override { return NetcdfFormatType::Pop; }
+    NetcdfGridType gridType() const override { return NetcdfGridType::UnstructuredGrid; }
+    bool matches( const NetcdfMetadata& metadata ) const override
+    {
+        if ( metadata.hasDimension( "time" ) || metadata.hasDimension( "Time" ) )
+            return false;
+        for ( const auto& variable : metadata.variableDimensions() )
+        {
+            if ( DimensionRank( variable.second ) == 3 ) return true;
+        }
+        return false;
+    }
+    std::shared_ptr<kvs::FileFormatBase> read( const std::string& filename ) const override
+    {
+        vtkNew<vtkNetCDFPOPReader> reader;
+        reader->SetFileName( filename.c_str() );
+        reader->Update();
+        auto point_centered = PointCenteredDataSet(
+            vtkDataSet::SafeDownCast( reader->GetOutputDataObject( 0 ) ) );
+        auto* rectilinear = vtkRectilinearGrid::SafeDownCast( point_centered );
+        if ( !rectilinear )
+        {
+            throw std::runtime_error(
+                "vtkNetCDFPOPReader did not return a vtkRectilinearGrid" );
+        }
+        auto unstructured = RectilinearGridToLinearHexahedra( rectilinear );
+        return std::make_shared<VtkXmlUnstructuredGrid>( unstructured );
+    }
+};
+
+class GenericNetcdfFormatAdapter : public NetcdfFormatAdapter
+{
+public:
+    const char* name() const override { return "VTK generic"; }
+    NetcdfFormatType formatType() const override { return NetcdfFormatType::Generic; }
+    NetcdfGridType gridType() const override { return NetcdfGridType::UnstructuredGrid; }
+    bool matches( const NetcdfMetadata& metadata ) const override
+    {
+        return !metadata.variableDimensions().empty();
+    }
+    std::shared_ptr<kvs::FileFormatBase> read( const std::string& filename ) const override
+    {
+        vtkNew<vtkNetCDFReader> reader;
+        reader->SetFileName( filename.c_str() );
+        if ( !SelectHighestRankDimensions( reader ) )
+        {
+            throw std::runtime_error( "vtkNetCDFReader found no readable data variable" );
+        }
+        NetcdfMetadata metadata;
+        if ( !Netcdf::ReadMetadata( filename, metadata ) )
+        {
+            throw std::runtime_error( "failed to read Generic NetCDF dimensions" );
+        }
+        const auto dimension_names = HighestRankDimensionNames( metadata );
+
+        SelectFirstTimeStep( reader );
+        reader->Update();
+        auto* image = vtkImageData::SafeDownCast( reader->GetOutputDataObject( 0 ) );
+        if ( !image )
+        {
+            throw std::runtime_error( "vtkNetCDFReader did not return vtkImageData" );
+        }
+
+        int image_dimensions[3] = {};
+        image->GetDimensions( image_dimensions );
+        auto coordinates =
+            ReadGenericRectilinearCoordinates( filename, dimension_names, image_dimensions );
+
+        vtkNew<vtkImageData> point_fields;
+        point_fields->ShallowCopy( image );
+        for ( const auto& name : dimension_names )
+        {
+            point_fields->GetPointData()->RemoveArray( name.c_str() );
+        }
+        auto unstructured = RectilinearGridToLinearHexahedra(
+            coordinates[0], coordinates[1], coordinates[2], point_fields );
+        return std::make_shared<VtkXmlUnstructuredGrid>( unstructured );
+    }
+};
+
 /**
  * @brief 利用可能なNetCDF形式アダプターの一覧を返す。
  * @return 登録済みアダプターの一覧。
@@ -453,7 +802,10 @@ public:
 const std::vector<std::shared_ptr<NetcdfFormatAdapter>>& RegisteredNetcdfAdapters()
 {
     static const std::vector<std::shared_ptr<NetcdfFormatAdapter>> adapters = {
-        std::make_shared<GearnNetcdfFormatAdapter>()
+        std::make_shared<GearnNetcdfFormatAdapter>(),
+        std::make_shared<CfNetcdfFormatAdapter>(),
+        std::make_shared<PopNetcdfFormatAdapter>(),
+        std::make_shared<GenericNetcdfFormatAdapter>()
     };
     return adapters;
 }
@@ -477,6 +829,8 @@ bool MatchesNetcdfGridType( const std::shared_ptr<kvs::FileFormatBase>& format,
         return dynamic_cast<VtkXmlStructuredGrid*>( format.get() ) != nullptr;
     case NetcdfGridType::UnstructuredGrid:
         return dynamic_cast<VtkXmlUnstructuredGrid*>( format.get() ) != nullptr;
+    case NetcdfGridType::PolyData:
+        return dynamic_cast<VtkXmlPolyData*>( format.get() ) != nullptr;
     case NetcdfGridType::Unknown:
     default:
         return false;
@@ -494,6 +848,62 @@ bool NetcdfMetadata::hasVariable( const std::string& name, const std::string& di
 }
 
 /**
+ * @brief 指定した名前の変数がメタデータに存在するかを判定する。
+ */
+bool NetcdfMetadata::hasVariable( const std::string& name ) const
+{
+    return m_variable_dimensions.find( name ) != m_variable_dimensions.end();
+}
+
+/**
+ * @brief 指定した名前の次元がメタデータに存在するかを判定する。
+ */
+bool NetcdfMetadata::hasDimension( const std::string& name ) const
+{
+    return m_dimensions.find( name ) != m_dimensions.end();
+}
+
+/**
+ * @brief 指定した変数のNetCDF型を返す。
+ */
+int NetcdfMetadata::variableType( const std::string& name ) const
+{
+    const auto found = m_variable_types.find( name );
+    return found == m_variable_types.end() ? NC_NAT : found->second;
+}
+
+/**
+ * @brief 指定した変数の各次元長を返す。
+ */
+const std::vector<std::size_t>& NetcdfMetadata::variableShape( const std::string& name ) const
+{
+    static const std::vector<std::size_t> empty;
+    const auto found = m_variable_shapes.find( name );
+    return found == m_variable_shapes.end() ? empty : found->second;
+}
+
+/**
+ * @brief 指定した変数の文字列属性を返す。
+ */
+std::string NetcdfMetadata::variableAttribute( const std::string& variable,
+                                               const std::string& attribute ) const
+{
+    const auto found_variable = m_variable_attributes.find( variable );
+    if ( found_variable == m_variable_attributes.end() ) return "";
+    const auto found_attribute = found_variable->second.find( attribute );
+    return found_attribute == found_variable->second.end() ? "" : found_attribute->second;
+}
+
+/**
+ * @brief 指定したグローバル文字列属性を返す。
+ */
+std::string NetcdfMetadata::globalAttribute( const std::string& attribute ) const
+{
+    const auto found = m_global_attributes.find( attribute );
+    return found == m_global_attributes.end() ? "" : found->second;
+}
+
+/**
  * @brief NetCDFファイルから変数名と次元の対応を読み込む。
  * @param filename 入力ファイル名。
  * @param metadata 読み込んだメタデータの格納先。
@@ -501,78 +911,163 @@ bool NetcdfMetadata::hasVariable( const std::string& name, const std::string& di
  */
 bool Netcdf::ReadMetadata( const std::string& filename, NetcdfMetadata& metadata )
 {
-    try
+    int file = -1;
+    const int open_error = nc_open( filename.c_str(), NC_NOWRITE, &file );
+    if ( open_error != NC_NOERR )
     {
-        detail::NetcdfDiagnostics diagnostics;
-        diagnostics.phase = "NetCDF format detection";
-        vtkNew<vtkNetCDFCFReader> reader;
-        vtkNew<vtkCallbackCommand> callback;
-        detail::ObserveNetcdfReader( reader, callback, diagnostics );
-        reader->SetFileName( filename.c_str() );
-        if ( reader->UpdateMetaData() == 0 )
-        {
-            diagnostics.errors.push_back(
-                diagnostics.phase + ": failed to read NetCDF metadata from " + filename );
-        }
-        detail::CheckNetcdfReaderError( reader, diagnostics.phase, diagnostics );
-        detail::ThrowNetcdfDiagnostics( diagnostics );
-
-        // 形式判別で再利用できるよう、全変数の名前と次元を保存する。
-        vtkStringArray* dimensions = reader->GetVariableDimensions();
-        metadata.m_variable_dimensions.clear();
-        for ( int i = 0; i < reader->GetNumberOfVariableArrays(); ++i )
-        {
-            metadata.m_variable_dimensions.emplace( reader->GetVariableArrayName( i ),
-                                                    dimensions->GetValue( i ) );
-        }
-        return true;
-    }
-    catch ( const std::exception& e )
-    {
-        kvsMessageError( e.what() );
+        kvsMessageError( ( std::string( "Failed to open NetCDF metadata: " ) +
+                           nc_strerror( open_error ) + ": " + filename )
+                             .c_str() );
         return false;
     }
+
+    auto close_file = [&]() {
+        if ( file >= 0 )
+        {
+            nc_close( file );
+            file = -1;
+        }
+    };
+    auto fail = [&]( const std::string& phase, int error ) {
+        kvsMessageError( ( std::string( "Failed to read NetCDF " ) + phase + ": " +
+                           nc_strerror( error ) + ": " + filename )
+                             .c_str() );
+        close_file();
+        return false;
+    };
+    auto read_text_attribute = [&]( int variable, const char* name ) {
+        nc_type type = NC_NAT;
+        std::size_t length = 0;
+        if ( nc_inq_att( file, variable, name, &type, &length ) != NC_NOERR )
+            return std::string();
+        if ( type == NC_CHAR )
+        {
+            std::string value( length, '\0' );
+            if ( length > 0 && nc_get_att_text( file, variable, name, value.data() ) != NC_NOERR )
+                return std::string();
+            return value;
+        }
+#ifdef NC_STRING
+        if ( type == NC_STRING && length > 0 )
+        {
+            std::vector<char*> values( length, nullptr );
+            if ( nc_get_att_string( file, variable, name, values.data() ) != NC_NOERR )
+                return std::string();
+            const std::string result = values.front() ? values.front() : "";
+            nc_free_string( length, values.data() );
+            return result;
+        }
+#endif
+        return std::string();
+    };
+
+    metadata.m_variable_dimensions.clear();
+    metadata.m_variable_types.clear();
+    metadata.m_variable_shapes.clear();
+    metadata.m_dimensions.clear();
+    metadata.m_global_attributes.clear();
+    metadata.m_variable_attributes.clear();
+
+    int dimension_count = 0;
+    int variable_count = 0;
+    int global_attribute_count = 0;
+    int unlimited_dimension = -1;
+    int error = nc_inq( file, &dimension_count, &variable_count, &global_attribute_count,
+                        &unlimited_dimension );
+    if ( error != NC_NOERR ) return fail( "header", error );
+
+    for ( int i = 0; i < dimension_count; ++i )
+    {
+        char name[NC_MAX_NAME + 1] = {};
+        std::size_t length = 0;
+        error = nc_inq_dim( file, i, name, &length );
+        if ( error != NC_NOERR ) return fail( "dimension", error );
+        metadata.m_dimensions.emplace( name, length );
+    }
+
+    for ( int i = 0; i < global_attribute_count; ++i )
+    {
+        char name[NC_MAX_NAME + 1] = {};
+        error = nc_inq_attname( file, NC_GLOBAL, i, name );
+        if ( error != NC_NOERR ) return fail( "global attribute", error );
+        const std::string value = read_text_attribute( NC_GLOBAL, name );
+        if ( !value.empty() ) metadata.m_global_attributes.emplace( name, value );
+    }
+
+    for ( int variable = 0; variable < variable_count; ++variable )
+    {
+        char name[NC_MAX_NAME + 1] = {};
+        nc_type type = NC_NAT;
+        int rank = 0;
+        int dimension_ids[NC_MAX_VAR_DIMS] = {};
+        int attribute_count = 0;
+        error = nc_inq_var( file, variable, name, &type, &rank, dimension_ids,
+                            &attribute_count );
+        if ( error != NC_NOERR ) return fail( "variable", error );
+
+        std::ostringstream dimensions;
+        dimensions << "(";
+        for ( int j = 0; j < rank; ++j )
+        {
+            char dimension_name[NC_MAX_NAME + 1] = {};
+            error = nc_inq_dimname( file, dimension_ids[j], dimension_name );
+            if ( error != NC_NOERR ) return fail( "variable dimension", error );
+            if ( j > 0 ) dimensions << ", ";
+            dimensions << dimension_name;
+        }
+        dimensions << ")";
+        metadata.m_variable_dimensions.emplace( name, dimensions.str() );
+        metadata.m_variable_types.emplace( name, static_cast<int>( type ) );
+
+        auto& shape = metadata.m_variable_shapes[name];
+        shape.reserve( static_cast<std::size_t>( rank ) );
+        for ( int j = 0; j < rank; ++j )
+        {
+            std::size_t length = 0;
+            error = nc_inq_dimlen( file, dimension_ids[j], &length );
+            if ( error != NC_NOERR ) return fail( "variable dimension length", error );
+            shape.push_back( length );
+        }
+
+        auto& attributes = metadata.m_variable_attributes[name];
+        for ( int j = 0; j < attribute_count; ++j )
+        {
+            char attribute_name[NC_MAX_NAME + 1] = {};
+            error = nc_inq_attname( file, variable, j, attribute_name );
+            if ( error != NC_NOERR ) return fail( "variable attribute", error );
+            const std::string value = read_text_attribute( variable, attribute_name );
+            if ( !value.empty() ) attributes.emplace( attribute_name, value );
+        }
+    }
+
+    close_file();
+    return true;
 }
 
 /**
  * @brief メタデータに適合するNetCDF形式アダプターを一つ選択する。
  * @param metadata 判定対象の変数メタデータ。
- * @return 一意に選択できたアダプター。未対応または曖昧な場合はnullptr。
+ * @return 優先順位が最も高い適合アダプター。未対応の場合はnullptr。
  */
 const NetcdfFormatAdapter* Netcdf::SelectAdapter( const NetcdfMetadata& metadata )
 {
-    std::vector<const NetcdfFormatAdapter*> matches;
     for ( const auto& adapter : detail::RegisteredNetcdfAdapters() )
     {
         if ( adapter->matches( metadata ) )
         {
-            matches.push_back( adapter.get() );
+            // 特殊規約から汎用規約の順に登録しているため、最初の一致を採用する。
+            return adapter.get();
         }
     }
 
-    if ( matches.empty() )
+    std::ostringstream message;
+    message << "Unsupported NetCDF data format; variables:";
+    for ( const auto& variable : metadata.variableDimensions() )
     {
-        std::ostringstream message;
-        message << "Unsupported NetCDF data format; variables:";
-        for ( const auto& variable : metadata.variableDimensions() )
-        {
-            message << " " << variable.first << variable.second;
-        }
-        kvsMessageError( message.str().c_str() );
-        return nullptr;
+        message << " " << variable.first << variable.second;
     }
-    if ( matches.size() > 1 )
-    {
-        std::ostringstream message;
-        message << "Ambiguous NetCDF data format; matched adapters:";
-        for ( const auto* adapter : matches )
-        {
-            message << " " << adapter->name();
-        }
-        kvsMessageError( message.str().c_str() );
-        return nullptr;
-    }
-    return matches.front();
+    kvsMessageError( message.str().c_str() );
+    return nullptr;
 }
 
 /**
@@ -582,17 +1077,39 @@ const NetcdfFormatAdapter* Netcdf::SelectAdapter( const NetcdfMetadata& metadata
 Netcdf::Netcdf( const std::string& filename ) { this->read( filename ); }
 
 /**
+ * @brief 読み込み条件を指定してNetCDFファイルを読み込む。
+ * @param filename 入力ファイル名。
+ * @param options 読み込み条件。
+ */
+Netcdf::Netcdf( const std::string& filename, const NetcdfReadOptions& options )
+{
+    this->read( filename, options );
+}
+
+/**
  * @brief NetCDFファイルの形式を判別し、対応する格子データへ変換する。
  * @param filename 入力ファイル名。
  * @return 読み込みと変換に成功した場合はtrue、それ以外はfalse。
  */
 bool Netcdf::read( const std::string& filename )
 {
+    return this->read( filename, NetcdfReadOptions{} );
+}
+
+/**
+ * @brief NetCDFファイルの形式を判別し、指定された条件で格子データへ変換する。
+ * @param filename 入力ファイル名。
+ * @param options 読み込み条件。
+ * @return 読み込みと変換に成功した場合はtrue、それ以外はfalse。
+ */
+bool Netcdf::read( const std::string& filename, const NetcdfReadOptions& options )
+{
     // 前回の読み込み結果を破棄し、失敗状態から処理を開始する。
     this->setFilename( filename );
     this->setSuccess( false );
     m_format.reset();
     m_format_name.clear();
+    m_format_type = NetcdfFormatType::Unknown;
     m_grid_type = NetcdfGridType::Unknown;
 
     // メタデータに基づいて入力形式を判別する。
@@ -611,7 +1128,7 @@ bool Netcdf::read( const std::string& filename )
     // 選択したアダプターで実データを読み込み、戻り値の格子型も検証する。
     try
     {
-        m_format = adapter->read( filename );
+        m_format = adapter->read( filename, options );
         if ( !m_format || !detail::MatchesNetcdfGridType( m_format, adapter->gridType() ) )
         {
             kvsMessageError( ( std::string( adapter->name() ) +
@@ -622,6 +1139,7 @@ bool Netcdf::read( const std::string& filename )
             return false;
         }
         m_format_name = adapter->name();
+        m_format_type = adapter->formatType();
         m_grid_type = adapter->gridType();
         this->setSuccess( true );
         return true;
@@ -675,7 +1193,9 @@ bool Netcdf::Probe( const std::string& filename, NetcdfFileInfo& info )
 
     info.path = filename;
     info.format_name = adapter->name();
+    info.format_type = adapter->formatType();
     info.grid_type = adapter->gridType();
+    info.input_role = NetcdfInputRole::Standard;
     return true;
 }
 } // namespace ExtendedFileFormat
