@@ -204,6 +204,7 @@ VTK_LINK_LIBRARY := \
 -lvtkFiltersParallel-$(VTK_VERSION) \
 -lvtkFiltersCore-$(VTK_VERSION) \
 -lvtkIOGeometry-$(VTK_VERSION) \
+-lvtkIONetCDF-$(VTK_VERSION) \
 -lvtkIOCGNSReader-$(VTK_VERSION) \
 -lvtkIOEnSight-$(VTK_VERSION) \
 -lvtkIOParallel-$(VTK_VERSION) \

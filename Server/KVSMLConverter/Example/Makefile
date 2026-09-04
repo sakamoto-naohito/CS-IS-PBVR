@@ -102,6 +102,7 @@ $(OUTDIR)/VtpExample.o \
 $(OUTDIR)/VtrExample.o \
 $(OUTDIR)/VtsExample.o \
 $(OUTDIR)/VtuExample.o \
+$(OUTDIR)/NetCDFExample.o \
 $(OUTDIR)/example.o
 
 

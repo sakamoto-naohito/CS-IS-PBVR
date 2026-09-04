@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "Filesystem.h"
 #include "FileFormat/VTK/VtkXmlUnstructuredGrid.h"
@@ -52,6 +54,8 @@ void MergeBlockAsPolygon( const std::string& dst_vtk, const std::string& dst_kvs
                           const std::string& config_path );
 void Case2Kvsml( const std::string& directory, const std::string& base, const std::string& src );
 void Cgns2Kvsml( const std::string& directory, const std::string& base, const std::string& src );
+void NetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src );
+void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src );
 
 int main( int argc, char** argv )
 {
@@ -275,6 +279,17 @@ int main( int argc, char** argv )
         else
         {
             Case2Kvsml( output_directory_path.string(), input_filename_without_extension, input_file_path.string() );
+        }
+    }
+    else if ( selected_extension == ".nc" || selected_extension == ".ncdf" )
+    {
+        if ( contains_wildcard( input_file_path.string() ) )
+        {
+            SeriesNetCDF2Kvsml( output_directory_path.string(), input_filename_without_extension, input_file_path.string() );
+        }
+        else
+        {
+            NetCDF2Kvsml( output_directory_path.string(), input_filename_without_extension, input_file_path.generic_string() );
         }
     }
     else
