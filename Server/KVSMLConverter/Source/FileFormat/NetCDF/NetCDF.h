@@ -53,17 +53,40 @@ public:
      */
     using VtkDataType = vtkUnstructuredGrid;
 
+    enum class ReaderType
+    {
+        NetCDFCF,
+        NetCDFPOP,
+        NetCDFCAM,
+        NetCDFMPAS,
+        NetCDFUGRID,
+        SLAC
+    };
+
 public:
     /**
      * Construct an IO.
      */
-    NetCDF(): BaseClass() {}
+    NetCDF():
+        BaseClass(),
+        m_reader_type( ReaderType::NetCDFCF )
+    {
+    }
+
     /**
      * Construct an IO.
      *
      * \param[in] filename A file name.
+     * \param[in] reader_type A reader type.
+     * \param[in] sub_file_path A sub file path (CAM or SLAC).
      */
-    NetCDF( const std::string& filename ): BaseClass()
+    NetCDF(
+        const std::string& filename,
+        ReaderType reader_type,
+        const std::string& sub_file_path = "" ):
+        BaseClass(),
+        m_reader_type( reader_type ),
+        m_sub_file_path( sub_file_path )
     {
         BaseClass::setFilename( filename );
         this->read( filename );
@@ -72,8 +95,16 @@ public:
      * Construct an IO.
      *
      * \param[in] filename A file name.
+     * \param[in] reader_type A reader type.
+     * \param[in] sub_file_path A sub file path (CAM or SLAC).
      */
-    NetCDF( std::string&& filename ): BaseClass()
+    NetCDF(
+        std::string&& filename,
+        ReaderType reader_type,
+        const std::string& sub_file_path = "" ):
+        BaseClass(),
+        m_reader_type( reader_type ),
+        m_sub_file_path( sub_file_path )
     {
         BaseClass::setFilename( filename );
         this->read( filename );
@@ -85,129 +116,23 @@ public:
         setSuccess( false );
         try
         {
-            // NetCDFファイルを読み込む
-            vtkNew<vtkNetCDFCFReader> reader;
-            reader->SetFileName( filename.c_str() );
-            reader->SphericalCoordinatesOff();
-
-            // メタデータを読み込む。
-            // これにより変数や次元情報を取得できるようになる。
-            if ( !reader->UpdateMetaData() )
-            {
-                throw std::runtime_error( "Failed to read NetCDF metadata: " + filename );
-            }
-
-            /*  
-                // 緯度・経度座標は現在サポートしない
-                // VTK-9.3.1ではGetLatitudeDimensionName(), GetLongitudeDimensionName()がprotectなので判定しない
-                // 最新版ではpublicになっている
-                const char* latitude_dimension  = reader->GetLatitudeDimensionName();
-                const char* longitude_dimension = reader->GetLongitudeDimensionName();
-                
-                if ( ( latitude_dimension  && latitude_dimension[0]  != '\0' ) ||
-                ( longitude_dimension && longitude_dimension[0] != '\0' ) )
-                {
-                    throw std::runtime_error( "Latitude/longitude coordinates are not supported: " + filename );
-                }
-            */
-
-            // time dimensionsを除いたdimensionsを取得
-            vtkStringArray* variable_dimensions = reader->GetVariableDimensions();
-
-            if ( !variable_dimensions )
-            {
-                throw std::runtime_error( "No dimensions found in NetCDF file: " + filename );
-            }
-
-            const int number_of_variables = reader->GetNumberOfVariableArrays();
-            std::optional<std::string> volume_dimensions; // 検出した3次元dimensions
-
-            // 3次元dimensionsを自動検出する
-            for ( int i = 0; i < number_of_variables; ++i )
-            {
-                const std::string dimensions = variable_dimensions->GetValue( i );
-
-                // 次元数の確認
-                int number_of_dimensions = 0;
-
-                if ( dimensions == "()" || dimensions.size() < 2 )
-                {
-                    number_of_dimensions = 0;
-                }
-                else
-                {
-                    number_of_dimensions = static_cast<int>( std::count( dimensions.begin(), dimensions.end(), ',' ) ) + 1;
-                }
-
-                if ( number_of_dimensions == 3 )
-                {
-                    volume_dimensions = dimensions;
-                    break;
-                }
-            }
-
-            if ( !volume_dimensions )
-            {
-                throw std::runtime_error( "No three-dimensional data variable was found: " + filename );
-            }
-
-            std::cout << "volume dimensions: " << *volume_dimensions << std::endl;
-
-            // 検出した3次元dimensionsを設定する
-            reader->SetDimensions( volume_dimensions->c_str() );
-            reader->SetOutputTypeToUnstructured();
-
-            // 出力型・時間軸などのメタ情報を構築する
-            reader->UpdateInformation();
-
-            // 出力ポート0のパイプライン情報を取得する、出力ポートは基本0
-            vtkInformation* output_information = reader->GetOutputInformation( 0 );
-
-            if ( !output_information )
-            {
-                throw std::runtime_error( "Failed to get vtkNetCDFCFReader output information." );
-            }
-
-            // time stepは0を指定しておく
-            int time_step = 0;
-
-            // time stepを選択する
-            auto* time_steps_key = vtkStreamingDemandDrivenPipeline::TIME_STEPS();
-
-            if ( output_information->Has( time_steps_key ) )
-            {
-                const int number_of_time_steps = output_information->Length( time_steps_key );
-
-                if ( time_step < 0 || time_step >= number_of_time_steps )
-                {
-                    std::ostringstream message;
-                    message << "Invalid time step: " << time_step << ". Valid range is [0, " << number_of_time_steps - 1 << "].";
-                    throw std::out_of_range( message.str() );
-                }
-
-                const double requested_time = output_information->Get( time_steps_key, time_step );
-
-                std::cout << "Number of time steps : " << number_of_time_steps << std::endl;
-                std::cout << "Selected time step   : " << time_step            << std::endl;
-                std::cout << "VTK time             : " << requested_time       << std::endl;
-
-                reader->UpdateTimeStep( requested_time );
-            }
-            else
-            {
-                // time dimensionなしでtime stepを0以外を指定した場合エラー
-                if ( time_step != 0 )
-                {
-                    throw std::out_of_range( "This NetCDF file has no time dimension. Only time_step = 0 is valid." );
-                }
-
-                std::cout << "No time dimension found." << std::endl;
-
-                reader->Update();
-            }
-
             // vtkUnstructuredGrid取得
-            vtkUnstructuredGrid* grid = vtkUnstructuredGrid::SafeDownCast( reader->GetOutputDataObject( 0 ) );
+            vtkSmartPointer<vtkUnstructuredGrid> grid;
+            
+            switch ( m_reader_type )
+            {
+            case ReaderType::NetCDFCF:
+                grid = readNetCDFCF( filename );
+                break;
+            case ReaderType::NetCDFCAM:
+                break;
+            case ReaderType::NetCDFMPAS:
+                break;
+            case ReaderType::NetCDFUGRID:
+                break;
+            case ReaderType::SLAC:
+                break;
+            }
 
             if ( !grid )
             {
@@ -256,6 +181,142 @@ public:
     vtkSmartPointer<VtkDataType> get() const { return vtk_data; }
 
 private:
+    vtkSmartPointer<vtkUnstructuredGrid> readNetCDFCF( const std::string& filename )
+    {
+        // NetCDFファイルを読み込む
+        vtkNew<vtkNetCDFCFReader> reader;
+        reader->SetFileName( filename.c_str() );
+        reader->SphericalCoordinatesOff();
+
+        // メタデータを読み込む。
+        // これにより変数や次元情報を取得できるようになる。
+        if ( !reader->UpdateMetaData() )
+        {
+            throw std::runtime_error( "Failed to read NetCDF metadata: " + filename );
+        }
+
+        /*  
+            // 緯度・経度座標は現在サポートしない
+            // VTK-9.3.1ではGetLatitudeDimensionName(), GetLongitudeDimensionName()がprotectなので判定しない
+            // 最新版ではpublicになっている
+            const char* latitude_dimension  = reader->GetLatitudeDimensionName();
+            const char* longitude_dimension = reader->GetLongitudeDimensionName();
+            
+            if ( ( latitude_dimension  && latitude_dimension[0]  != '\0' ) ||
+            ( longitude_dimension && longitude_dimension[0] != '\0' ) )
+            {
+                throw std::runtime_error( "Latitude/longitude coordinates are not supported: " + filename );
+            }
+        */
+
+        // time dimensionsを除いたdimensionsを取得
+        vtkStringArray* variable_dimensions = reader->GetVariableDimensions();
+
+        if ( !variable_dimensions )
+        {
+            throw std::runtime_error( "No dimensions found in NetCDF file: " + filename );
+        }
+
+        const int number_of_variables = reader->GetNumberOfVariableArrays();
+        std::optional<std::string> volume_dimensions; // 検出した3次元dimensions
+
+        // 3次元dimensionsを自動検出する
+        for ( int i = 0; i < number_of_variables; ++i )
+        {
+            const std::string dimensions = variable_dimensions->GetValue( i );
+
+            // 次元数の確認
+            int number_of_dimensions = 0;
+
+            if ( dimensions == "()" || dimensions.size() < 2 )
+            {
+                number_of_dimensions = 0;
+            }
+            else
+            {
+                number_of_dimensions = static_cast<int>( std::count( dimensions.begin(), dimensions.end(), ',' ) ) + 1;
+            }
+
+            if ( number_of_dimensions == 3 )
+            {
+                volume_dimensions = dimensions;
+                break;
+            }
+        }
+
+        if ( !volume_dimensions )
+        {
+            throw std::runtime_error( "No three-dimensional data variable was found: " + filename );
+        }
+
+        std::cout << "volume dimensions: " << *volume_dimensions << std::endl;
+
+        // 検出した3次元dimensionsを設定する
+        reader->SetDimensions( volume_dimensions->c_str() );
+        reader->SetOutputTypeToUnstructured();
+
+        // 出力型・時間軸などのメタ情報を構築する
+        reader->UpdateInformation();
+
+        // 出力ポート0のパイプライン情報を取得する、出力ポートは基本0
+        vtkInformation* output_information = reader->GetOutputInformation( 0 );
+
+        if ( !output_information )
+        {
+            throw std::runtime_error( "Failed to get vtkNetCDFCFReader output information." );
+        }
+
+        // time stepは0を指定しておく
+        int time_step = 0;
+
+        // time stepを選択する
+        auto* time_steps_key = vtkStreamingDemandDrivenPipeline::TIME_STEPS();
+
+        if ( output_information->Has( time_steps_key ) )
+        {
+            const int number_of_time_steps = output_information->Length( time_steps_key );
+
+            if ( time_step < 0 || time_step >= number_of_time_steps )
+            {
+                std::ostringstream message;
+                message << "Invalid time step: " << time_step << ". Valid range is [0, " << number_of_time_steps - 1 << "].";
+                throw std::out_of_range( message.str() );
+            }
+
+            const double requested_time = output_information->Get( time_steps_key, time_step );
+
+            std::cout << "Number of time steps : " << number_of_time_steps << std::endl;
+            std::cout << "Selected time step   : " << time_step            << std::endl;
+            std::cout << "VTK time             : " << requested_time       << std::endl;
+
+            reader->UpdateTimeStep( requested_time );
+        }
+        else
+        {
+            // time dimensionなしでtime stepを0以外を指定した場合エラー
+            if ( time_step != 0 )
+            {
+                throw std::out_of_range( "This NetCDF file has no time dimension. Only time_step = 0 is valid." );
+            }
+
+            std::cout << "No time dimension found." << std::endl;
+
+            reader->Update();
+        }
+
+        vtkSmartPointer<vtkUnstructuredGrid> grid = vtkUnstructuredGrid::SafeDownCast( reader->GetOutputDataObject( 0 ) );
+
+        if ( !grid )
+        {
+            throw std::runtime_error( "vtkNetCDFCFReader did not produce vtkUnstructuredGrid." );
+        }
+
+        return grid;
+    }
+
+private:
+    ReaderType m_reader_type;
+    std::string m_sub_file_path; // connectivity file (CAM) or mode file (SLAC)
     vtkSmartPointer<vtkUnstructuredGrid> vtk_data;
 };
 } // namespace cvt
