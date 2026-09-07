@@ -29,6 +29,7 @@
 #include "kvs/Message"
 
 #include <vtkInformation.h>
+#include <vtkNetCDFCAMReader.h>
 #include <vtkNetCDFCFReader.h>
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
@@ -125,6 +126,7 @@ public:
                 grid = readNetCDFCF( filename );
                 break;
             case ReaderType::NetCDFCAM:
+                grid = readNetCDFCAM( filename, m_sub_file_path );
                 break;
             case ReaderType::NetCDFMPAS:
                 break;
@@ -309,6 +311,71 @@ private:
         if ( !grid )
         {
             throw std::runtime_error( "vtkNetCDFCFReader did not produce vtkUnstructuredGrid." );
+        }
+
+        return grid;
+    }
+
+    vtkSmartPointer<vtkUnstructuredGrid> readNetCDFCAM(
+        const std::string& points_file_path,
+        const std::string& connectivity_file_path )
+    {
+        if ( points_file_path.empty() )
+        {
+            throw std::invalid_argument( "CAM data file path is empty." );
+        }
+
+        if ( connectivity_file_path.empty() )
+        {
+            throw std::invalid_argument( "CAM connectivity file path is empty." );
+        }
+
+        vtkNew<vtkNetCDFCAMReader> reader;
+        reader->SetFileName( points_file_path.c_str() );
+        reader->SetConnectivityFileName( connectivity_file_path.c_str() );
+
+        // 全midpoint layerを読み込み、3次元の六面体格子を生成する。
+        reader->SetVerticalDimension(
+            vtkNetCDFCAMReader::VERTICAL_DIMENSION_MIDPOINT_LAYERS );
+        reader->SingleMidpointLayerOff();
+
+        // 出力型・時間軸などのメタ情報を構築する。
+        reader->UpdateInformation();
+
+        vtkInformation* output_information = reader->GetOutputInformation( 0 );
+
+        if ( !output_information )
+        {
+            throw std::runtime_error( "Failed to get vtkNetCDFCAMReader output information." );
+        }
+
+        // 1ファイルを1 time stepとして扱い、ファイル内の先頭time stepのみを読み込む。
+        auto* time_steps_key = vtkStreamingDemandDrivenPipeline::TIME_STEPS();
+
+        if ( output_information->Has( time_steps_key ) )
+        {
+            const int number_of_time_steps = output_information->Length( time_steps_key );
+
+            if ( number_of_time_steps < 1 )
+            {
+                throw std::runtime_error( "No time steps found in CAM data file: " + points_file_path );
+            }
+
+            const double requested_time = output_information->Get( time_steps_key, 0 );
+            reader->UpdateTimeStep( requested_time );
+        }
+        else
+        {
+            reader->Update();
+        }
+
+        vtkSmartPointer<vtkUnstructuredGrid> grid =
+            vtkUnstructuredGrid::SafeDownCast( reader->GetOutputDataObject( 0 ) );
+
+        if ( !grid )
+        {
+            throw std::runtime_error(
+                "vtkNetCDFCAMReader did not produce vtkUnstructuredGrid: " + points_file_path );
         }
 
         return grid;
