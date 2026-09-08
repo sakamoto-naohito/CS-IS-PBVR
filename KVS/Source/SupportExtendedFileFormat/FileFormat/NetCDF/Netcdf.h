@@ -166,6 +166,15 @@ struct NetcdfFileInfo
 };
 
 /**
+ * @brief SLACメッシュに対応する1時刻分のmodeファイル情報。
+ */
+struct SlacTimeStepFile
+{
+    std::string path;
+    double time = 0.0;
+};
+
+/**
  * @brief 個別のNetCDFデータ形式を読み込むためのアダプターインターフェース。
  */
 class NetcdfFormatAdapter
@@ -188,6 +197,13 @@ public:
     {
         (void)options;
         return this->read( filename );
+    }
+    /// 形式が公開する内部時刻を取得する。
+    virtual bool timeSteps( const std::string&, const NetcdfReadOptions&,
+                            std::vector<double>&, std::string& error ) const
+    {
+        error = "This NetCDF format does not expose internal time steps";
+        return false;
     }
 };
 
@@ -233,6 +249,25 @@ public:
 
     /// NetCDFファイルから形式判定用メタデータを読み込む。
     static bool ReadMetadata( const std::string& filename, NetcdfMetadata& metadata );
+
+    /**
+     * @brief NetCDF形式が公開する内部時刻を取得する。
+     * @param filename 入力ファイル名。
+     * @param options 補助ファイルなどの読み込み条件。
+     * @param time_steps 取得した物理時刻の格納先。
+     * @param error 失敗理由の格納先。
+     * @return 内部時刻の取得に成功した場合はtrue、それ以外はfalse。
+     */
+    static bool TimeSteps( const std::string& filename, const NetcdfReadOptions& options,
+                           std::vector<double>& time_steps, std::string& error );
+
+    /**
+     * @brief SLAC mode群を検証し、物理mode値の昇順に解決する。
+     */
+    static bool ResolveSlacModes( const std::string& mesh_filename,
+                                  const std::vector<std::string>& mode_filenames,
+                                  std::vector<SlacTimeStepFile>& modes,
+                                  std::string& error );
 
 private:
     /// メタデータに適合する形式アダプターを選択する。
