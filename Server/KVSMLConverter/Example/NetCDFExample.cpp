@@ -8,7 +8,12 @@
  * You should have received a copy of the CC0 legal code along with this
  * work. If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
+#include <algorithm>
+#include <cctype>
 #include <iostream>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -31,7 +36,7 @@ cvt::NetCDF::ReaderType SelectNetCDFReader()
             << "  1: vtkNetCDFCFReader\n"
             << "  2: vtkNetCDFPOPReader\n"
             << "  3: vtkNetCDFCAMReader\n"
-            << "  4: vtkMPASReader\n"
+            << "  4: MPASReader (using direct NetCDF reader)\n"
             << "  5: vtkNetCDFUGRIDReader\n"
             << "  6: vtkSLACReader\n"
             << "Input [1-6]: ";
@@ -40,24 +45,30 @@ cvt::NetCDF::ReaderType SelectNetCDFReader()
 
         if ( std::cin >> selection )
         {
-            switch ( selection )
+            if ( selection >= 1 && selection <= 6 )
             {
-            case 1:
-                return cvt::NetCDF::ReaderType::NetCDFCF;
-            case 2:
-                return cvt::NetCDF::ReaderType::NetCDFPOP;
-            case 3:
-                return cvt::NetCDF::ReaderType::NetCDFCAM;
-            case 4:
-                return cvt::NetCDF::ReaderType::NetCDFMPAS;
-            case 5:
-                return cvt::NetCDF::ReaderType::NetCDFUGRID;
-            case 6:
-                return cvt::NetCDF::ReaderType::SLAC;
+                // 後続の getline が選択番号の入力行末を読み取らないようにする。
+                std::cin.ignore( std::numeric_limits<std::streamsize>::max(), '\n' );
+
+                switch ( selection )
+                {
+                case 1:
+                    return cvt::NetCDF::ReaderType::NetCDFCF;
+                case 2:
+                    return cvt::NetCDF::ReaderType::NetCDFPOP;
+                case 3:
+                    return cvt::NetCDF::ReaderType::NetCDFCAM;
+                case 4:
+                    return cvt::NetCDF::ReaderType::NetCDFMPAS;
+                case 5:
+                    return cvt::NetCDF::ReaderType::NetCDFUGRID;
+                case 6:
+                    return cvt::NetCDF::ReaderType::SLAC;
+                }
             }
         }
 
-        std::cerr << "Invalid input. Please enter a number from 1 to 7.\n\n";
+        std::cerr << "Invalid input. Please enter a number from 1 to 6.\n\n";
 
         // std::cin が "abc" などで fail 状態になった場合に復旧する。
         std::cin.clear();
@@ -85,6 +96,78 @@ std::string GetModeFilePath()
     return file_path;
 }
 
+int GetLayerThickness()
+{
+    constexpr int default_layer_thickness = 10000;
+
+    while ( true )
+    {
+        std::cout << "Input MPAS layer thickness [1-200000] (default: 10000): ";
+
+        std::string input;
+        if ( !std::getline( std::cin, input ) )
+        {
+            throw std::runtime_error( "Input ended while reading MPAS layer thickness." );
+        }
+
+        const std::string::size_type first = input.find_first_not_of( " \t\r\n" );
+        if ( first == std::string::npos )
+        {
+            return default_layer_thickness;
+        }
+        const std::string::size_type last = input.find_last_not_of( " \t\r\n" );
+        const std::string value_text = input.substr( first, last - first + 1 );
+
+        std::istringstream parser( value_text );
+        long long value = 0;
+        std::string extra;
+        if ( ( parser >> value ) && !( parser >> extra ) && value >= 1 && value <= 200000 )
+        {
+            return static_cast<int>( value );
+        }
+
+        std::cerr << "Invalid input. Please enter an integer from 1 to 200000.\n";
+    }
+}
+
+bool GetIsAtmosphere()
+{
+    while ( true )
+    {
+        std::cout << "Is this MPAS atmosphere data? [true/false or 1/0] (default: false): ";
+
+        std::string input;
+        if ( !std::getline( std::cin, input ) )
+        {
+            throw std::runtime_error( "Input ended while reading MPAS atmosphere setting." );
+        }
+
+        const std::string::size_type first = input.find_first_not_of( " \t\r\n" );
+        if ( first == std::string::npos )
+        {
+            return false;
+        }
+        const std::string::size_type last = input.find_last_not_of( " \t\r\n" );
+        std::string value = input.substr( first, last - first + 1 );
+        std::transform(
+            value.begin(), value.end(), value.begin(), []( unsigned char character )
+            {
+                return static_cast<char>( std::tolower( character ) );
+            } );
+
+        if ( value == "true" || value == "1" )
+        {
+            return true;
+        }
+        if ( value == "false" || value == "0" )
+        {
+            return false;
+        }
+
+        std::cerr << "Invalid input. Please enter true, false, 1, or 0.\n";
+    }
+}
+
 void NetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src )
 {
 
@@ -92,12 +175,19 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
 
     cvt::NetCDF::ReaderType reader_type;
     std::string sub_file_path;
+    int layer_thickness = cvt::NetCDF::DefaultMPASLayerThickness; // for MPAS
+    bool is_atmosphere = cvt::NetCDF::DefaultMPASIsAtmosphere; // for MPAS
 
     reader_type = SelectNetCDFReader();
 
     if ( reader_type == cvt::NetCDF::ReaderType::NetCDFCAM )
     {
         sub_file_path = GetConnectivityFilePath();
+    }
+    else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFMPAS )
+    {
+        layer_thickness = GetLayerThickness();
+        is_atmosphere = GetIsAtmosphere();
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
@@ -108,7 +198,7 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
         sub_file_path = "";
     }
 
-    cvt::NetCDF input_netcdf( src, reader_type, sub_file_path );
+    cvt::NetCDF input_netcdf( src, reader_type, sub_file_path, layer_thickness, is_atmosphere );
 
     int time_step = 0;
     int last_time_step = 0;
@@ -147,12 +237,19 @@ void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, 
 
     cvt::NetCDF::ReaderType reader_type;
     std::string sub_file_path;
+    int layer_thickness = cvt::NetCDF::DefaultMPASLayerThickness; // for MPAS
+    bool is_atmosphere = cvt::NetCDF::DefaultMPASIsAtmosphere; // for MPAS
 
     reader_type = SelectNetCDFReader();
 
     if ( reader_type == cvt::NetCDF::ReaderType::NetCDFCAM )
     {
         sub_file_path = GetConnectivityFilePath();
+    }
+    else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFMPAS )
+    {
+        layer_thickness = GetLayerThickness();
+        is_atmosphere = GetIsAtmosphere();
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
@@ -173,7 +270,7 @@ void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, 
     for ( const auto& filename : sequence.fileNames() )
     {
         std::cout << "Reading " << filename << " ..." << std::endl;
-        cvt::NetCDF netcdf( filename, reader_type, sub_file_path );
+        cvt::NetCDF netcdf( filename, reader_type, sub_file_path, layer_thickness, is_atmosphere );
 
         cvt::VtkImporter<cvt::NetCDF> importer( &netcdf );
         std::cout << "  cell type: " << importer.cellType() << std::endl;

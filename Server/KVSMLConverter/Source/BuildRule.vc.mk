@@ -51,6 +51,7 @@ $(OUTDIR)/Converter/ConverterInputs.obj \
 $(OUTDIR)/Exporter/UnstructuredVolumeObjectExporter.obj \
 $(OUTDIR)/Exporter/StructuredVolumeObjectExporter.obj \
 $(OUTDIR)/FileFormat/VtkCompositeDataSetFileFormat.obj \
+$(OUTDIR)/FileFormat/NetCDF/DirectNetCDFMPASReader.obj \
 $(OUTDIR)/Importer/VtkImport.obj \
 $(OUTDIR)/PBVRFileInformation/UnstructuredPfi.obj
 
@@ -74,6 +75,12 @@ $<
 {.\FileFormat\}.cpp{$(OUTDIR)\FileFormat\}.obj::
 	IF NOT EXIST $(OUTDIR)\FileFormat $(MKDIR) $(OUTDIR)\FileFormat
 	$(CPP) /c $(CPPFLAGS) $(DEFINITIONS) $(INCLUDE_PATH) /Fo$(OUTDIR)\FileFormat\ @<<
+$<
+<<
+
+{.\FileFormat\NetCDF\}.cpp{$(OUTDIR)\FileFormat\NetCDF\}.obj::
+	IF NOT EXIST $(OUTDIR)\FileFormat\NetCDF $(MKDIR) $(OUTDIR)\FileFormat\NetCDF
+	$(CPP) /c $(CPPFLAGS) $(DEFINITIONS) $(INCLUDE_PATH) /Fo$(OUTDIR)\FileFormat\NetCDF\ @<<
 $<
 <<
 
@@ -127,6 +134,8 @@ install::
 	$(INSTALL) .\FileFormat\STL\*.h $(INSTALL_DIR)\include\FileFormat\STL
 	IF NOT EXIST $(INSTALL_DIR)\include\FileFormat\VTK $(MKDIR) $(INSTALL_DIR)\include\FileFormat\VTK
 	$(INSTALL) .\FileFormat\VTK\*.h $(INSTALL_DIR)\include\FileFormat\VTK
+	IF NOT EXIST $(INSTALL_DIR)\include\FileFormat\NetCDF $(MKDIR) $(INSTALL_DIR)\include\FileFormat\NetCDF
+	$(INSTALL) .\FileFormat\NetCDF\*.h $(INSTALL_DIR)\include\FileFormat\NetCDF
 #
 	IF NOT EXIST $(INSTALL_DIR)\include\Importer $(MKDIR) $(INSTALL_DIR)\include\Importer
 	$(INSTALL) .\Importer\*.h $(INSTALL_DIR)\include\Importer

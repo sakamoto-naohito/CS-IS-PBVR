@@ -52,6 +52,7 @@ $(OUTDIR)/PBVRFileInformation/UnstructuredPfi.o \
 $(OUTDIR)/Exporter/UnstructuredVolumeObjectExporter.o \
 $(OUTDIR)/Exporter/StructuredVolumeObjectExporter.o \
 $(OUTDIR)/FileFormat/VtkCompositeDataSetFileFormat.o \
+$(OUTDIR)/FileFormat/NetCDF/DirectNetCDFMPASReader.o \
 $(OUTDIR)/Importer/VtkImport.o
 
 
@@ -68,7 +69,7 @@ $(OUTDIR)/Exporter/%.o: ./Exporter/%.cpp ./Exporter/%.h
 	$(CPP) -c $(CPPFLAGS) $(DEFINITIONS) $(INCLUDE_PATH) -o $@ $<
 
 $(OUTDIR)/FileFormat/%.o: ./FileFormat/%.cpp ./FileFormat/%.h
-	$(MKDIR) $(OUTDIR)/FileFormat
+	$(MKDIR) $(@D)
 	$(CPP) -c $(CPPFLAGS) $(DEFINITIONS) $(INCLUDE_PATH) -o $@ $<
 
 $(OUTDIR)/Importer/%.o: ./Importer/%.cpp ./Importer/%.h
@@ -112,6 +113,8 @@ install::
 	$(INSTALL) ./FileFormat/STL/*.h $(INSTALL_DIR)/include/FileFormat/STL
 	$(MKDIR) $(INSTALL_DIR)/include/FileFormat/VTK
 	$(INSTALL) ./FileFormat/VTK/*.h $(INSTALL_DIR)/include/FileFormat/VTK
+	$(MKDIR) $(INSTALL_DIR)/include/FileFormat/NetCDF
+	$(INSTALL) ./FileFormat/NetCDF/*.h $(INSTALL_DIR)/include/FileFormat/NetCDF
 #
 	$(MKDIR) $(INSTALL_DIR)/include/Importer
 	$(INSTALL) ./Importer/*.h $(INSTALL_DIR)/include/Importer

@@ -36,6 +36,9 @@
     <ClCompile Include="Source\FileFormat\VtkCompositeDataSetFileFormat.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
+    <ClCompile Include="Source\FileFormat\NetCDF\DirectNetCDFMPASReader.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Importer\VtkImport.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
@@ -117,6 +120,12 @@
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Source\FileFormat\VtkUnstructuredFileFormat.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\FileFormat\NetCDF\DirectNetCDFMPASReader.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\FileFormat\NetCDF\NetCDF.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
     <ClInclude Include="Source\FileFormat\AVS\AvsUcd.h">

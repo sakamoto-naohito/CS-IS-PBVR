@@ -162,6 +162,7 @@ vtkFiltersGeneral-$(VTK_VERSION)d.lib \
 vtkFiltersGeometry-$(VTK_VERSION)d.lib \
 vtkFiltersParallel-$(VTK_VERSION)d.lib \
 vtkIOCore-$(VTK_VERSION)d.lib \
+vtknetcdf-$(VTK_VERSION)d.lib \
 vtkIOGeometry-$(VTK_VERSION)d.lib \
 vtkIOCGNSReader-$(VTK_VERSION)d.lib \
 vtkIOEnSight-$(VTK_VERSION)d.lib \
@@ -187,6 +188,7 @@ vtkFiltersGeneral-$(VTK_VERSION).lib \
 vtkFiltersGeometry-$(VTK_VERSION).lib \
 vtkFiltersParallel-$(VTK_VERSION).lib \
 vtkIOCore-$(VTK_VERSION).lib \
+vtknetcdf-$(VTK_VERSION).lib \
 vtkIOGeometry-$(VTK_VERSION).lib \
 vtkIOCGNSReader-$(VTK_VERSION).lib \
 vtkIOEnSight-$(VTK_VERSION).lib \

@@ -220,6 +220,7 @@ VTK_LINK_LIBRARY := \
 -lvtkCommonSystem-$(VTK_VERSION) \
 -lvtkCommonCore-$(VTK_VERSION) \
 -lvtkIOCore-$(VTK_VERSION) \
+-lvtknetcdf-$(VTK_VERSION) \
 -lvtksys-$(VTK_VERSION) \
 -lvtkloguru-$(VTK_VERSION) \
 -lvtkCommonMisc-$(VTK_VERSION) \

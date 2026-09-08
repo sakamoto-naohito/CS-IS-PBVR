@@ -43,6 +43,7 @@ set(CVT_SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Exporter/StructuredVolumeObjectExporter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Exporter/UnstructuredVolumeObjectExporter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/FileFormat/VtkCompositeDataSetFileFormat.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/FileFormat/NetCDF/DirectNetCDFMPASReader.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/PBVRFileInformation/UnstructuredPfi.cpp)
 
 set(TARGET_NAME "kvsml-converter")

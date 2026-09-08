@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "DirectNetCDFMPASReader.h"
 #include "kvs/FileFormatBase"
 #include "kvs/Message"
 
@@ -64,13 +65,18 @@ public:
         SLAC
     };
 
+    static constexpr int DefaultMPASLayerThickness = 10000;
+    static constexpr bool DefaultMPASIsAtmosphere = false;
+
 public:
     /**
      * Construct an IO.
      */
     NetCDF():
         BaseClass(),
-        m_reader_type( ReaderType::NetCDFCF )
+        m_reader_type( ReaderType::NetCDFCF ),
+        m_layer_thickness( DefaultMPASLayerThickness ),
+        m_is_atmosphere( DefaultMPASIsAtmosphere )
     {
     }
 
@@ -80,14 +86,20 @@ public:
      * \param[in] filename A file name.
      * \param[in] reader_type A reader type.
      * \param[in] sub_file_path A sub file path (CAM or SLAC).
+     * \param[in] layer_thickness for MPAS.
+     * \param[in] is_atmosphere for MPAS.
      */
     NetCDF(
         const std::string& filename,
         ReaderType reader_type,
-        const std::string& sub_file_path = "" ):
+        const std::string& sub_file_path = "",
+        int layer_thickness = 10000,
+        bool is_atmosphere = false ):
         BaseClass(),
         m_reader_type( reader_type ),
-        m_sub_file_path( sub_file_path )
+        m_sub_file_path( sub_file_path ),
+        m_layer_thickness( layer_thickness ),
+        m_is_atmosphere( is_atmosphere )
     {
         BaseClass::setFilename( filename );
         this->read( filename );
@@ -98,14 +110,20 @@ public:
      * \param[in] filename A file name.
      * \param[in] reader_type A reader type.
      * \param[in] sub_file_path A sub file path (CAM or SLAC).
+     * \param[in] layer_thickness for MPAS.
+     * \param[in] is_atmosphere for MPAS.
      */
     NetCDF(
         std::string&& filename,
         ReaderType reader_type,
-        const std::string& sub_file_path = "" ):
+        const std::string& sub_file_path = "",
+        int layer_thickness = 10000,
+        bool is_atmosphere = false ):
         BaseClass(),
         m_reader_type( reader_type ),
-        m_sub_file_path( sub_file_path )
+        m_sub_file_path( sub_file_path ),
+        m_layer_thickness( layer_thickness ),
+        m_is_atmosphere( is_atmosphere )
     {
         BaseClass::setFilename( filename );
         this->read( filename );
@@ -129,6 +147,7 @@ public:
                 grid = readNetCDFCAM( filename, m_sub_file_path );
                 break;
             case ReaderType::NetCDFMPAS:
+                grid = readNetCDFMPAS( filename );
                 break;
             case ReaderType::NetCDFUGRID:
                 break;
@@ -138,12 +157,12 @@ public:
 
             if ( !grid )
             {
-                throw std::runtime_error( "vtkNetCDFCFReader did not produce vtkUnstructuredGrid." );
+                throw std::runtime_error( "Selected NetCDF reader did not produce vtkUnstructuredGrid." );
             }
 
             if ( grid->GetNumberOfPoints() == 0 || grid->GetNumberOfCells() == 0 )
             {
-                throw std::runtime_error( "vtkNetCDFCFReader produced empty vtkUnstructuredGrid." );
+                throw std::runtime_error( "Selected NetCDF reader produced empty vtkUnstructuredGrid." );
             }
 
             std::cout << "Unstructured grid points : " << grid->GetNumberOfPoints() << std::endl;
@@ -381,9 +400,25 @@ private:
         return grid;
     }
 
+    /**
+     * MPAS形式のNetCDFファイルを専用Readerへ委譲して読み込む。
+     *
+     * \param[in] filename MPASデータファイルのパス。
+     * \return 生成したVTK非構造格子。
+     * \throws std::exception ファイルの読み込み、形式検証、格子生成、または
+     *         セルデータから点データへの変換に失敗した場合。
+     */
+    vtkSmartPointer<vtkUnstructuredGrid> readNetCDFMPAS( const std::string& filename )
+    {
+        DirectNetCDFMPASReader reader( filename, m_layer_thickness, m_is_atmosphere );
+        return reader.read();
+    }
+
 private:
     ReaderType m_reader_type;
     std::string m_sub_file_path; // connectivity file (CAM) or mode file (SLAC)
+    int m_layer_thickness; // for MPAS
+    bool m_is_atmosphere; // for MPAS
     vtkSmartPointer<vtkUnstructuredGrid> vtk_data;
 };
 } // namespace cvt
