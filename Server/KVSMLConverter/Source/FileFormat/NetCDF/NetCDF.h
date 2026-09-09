@@ -30,11 +30,14 @@
 #include "kvs/Message"
 
 #include <vtkAppendFilter.h>
+#include <vtkCellType.h>
 #include <vtkCompositeDataIterator.h>
 #include <vtkCompositeDataSet.h>
+#include <vtkDataSetTriangleFilter.h>
 #include <vtkInformation.h>
 #include <vtkNetCDFCAMReader.h>
 #include <vtkNetCDFCFReader.h>
+#include <vtkNetCDFUGRIDReader.h>
 #include <vtkNew.h>
 #include <vtkSLACReader.h>
 #include <vtkSmartPointer.h>
@@ -154,6 +157,7 @@ public:
                 grid = readNetCDFMPAS( filename );
                 break;
             case ReaderType::NetCDFUGRID:
+                grid = readNetCDFUGRID( filename );
                 break;
             case ReaderType::SLAC:
                 grid = readNetCDFSLAC( filename, m_sub_file_path );
@@ -533,6 +537,55 @@ private:
         vtkSmartPointer<vtkUnstructuredGrid> grid =
             vtkSmartPointer<vtkUnstructuredGrid>::New();
         grid->DeepCopy( appended_grid );
+        return grid;
+    }
+
+    vtkSmartPointer<vtkUnstructuredGrid> readNetCDFUGRID( const std::string& filename )
+    {
+        vtkNew<vtkNetCDFUGRIDReader> reader;
+        reader->SetFileName( filename.c_str() );
+
+        vtkNew<vtkDataSetTriangleFilter> triangle_filter;
+        triangle_filter->SetInputConnection( reader->GetOutputPort() );
+        triangle_filter->TetrahedraOnlyOff();
+        triangle_filter->Update();
+
+        vtkUnstructuredGrid* triangulated_grid = triangle_filter->GetOutput();
+        if ( !triangulated_grid )
+        {
+            throw std::runtime_error(
+                "vtkDataSetTriangleFilter produced null output for NetCDF file: " + filename );
+        }
+
+        if ( triangulated_grid->GetNumberOfPoints() == 0 )
+        {
+            throw std::runtime_error(
+                "vtkDataSetTriangleFilter produced no points for NetCDF file: " + filename );
+        }
+
+        if ( triangulated_grid->GetNumberOfCells() == 0 )
+        {
+            throw std::runtime_error(
+                "vtkDataSetTriangleFilter produced no cells for NetCDF file: " + filename );
+        }
+
+        for ( vtkIdType cell_index = 0;
+              cell_index < triangulated_grid->GetNumberOfCells();
+              ++cell_index )
+        {
+            const int cell_type = triangulated_grid->GetCellType( cell_index );
+            if ( cell_type != VTK_TRIANGLE )
+            {
+                throw std::runtime_error(
+                    "vtkDataSetTriangleFilter produced a non-triangle cell for NetCDF file: " +
+                    filename + ", cell index: " + std::to_string( cell_index ) +
+                    ", VTK cell type: " + std::to_string( cell_type ) );
+            }
+        }
+
+        auto grid = vtkSmartPointer<vtkUnstructuredGrid>::New();
+        grid->DeepCopy( triangle_filter->GetOutput() );
+
         return grid;
     }
 

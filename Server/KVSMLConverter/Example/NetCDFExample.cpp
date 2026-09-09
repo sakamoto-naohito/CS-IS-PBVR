@@ -18,10 +18,14 @@
 #include <unordered_map>
 
 #include "kvs/Indent"
+#include "kvs/KVSMLPolygonObject"
+#include "kvs/PolygonExporter"
+#include "kvs/PolygonObject"
 #include "kvs/UnstructuredVolumeObject"
 
 #include "Exporter/UnstructuredVolumeObjectExporter.h"
 #include "FileFormat/NetCDF/NetCDF.h"
+#include "Filesystem.h"
 #include "Importer/VtkImporter.h"
 #include "PBVRFileInformation/UnstructuredPfi.h"
 #include "TimeSeriesFiles/NumeralSequenceFileNames.h"
@@ -229,6 +233,7 @@ void SeriesNetCDFSLAC2KVSML( const std::string& directory, const std::string& ba
 
 void NetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src )
 {
+    using fs = cvt::filesystem;
 
     std::cout << "reading " << src << " ..." << std::endl;
 
@@ -284,34 +289,63 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
     else
     {
         cvt::NetCDF input_netcdf( src, reader_type, sub_file_path, layer_thickness, is_atmosphere );
+        if ( !input_netcdf.isSuccess() )
+        {
+            std::cerr << "Failed to read NetCDF file: " << src << std::endl;
+            return;
+        }
 
         int time_step = 0;
         int last_time_step = 0;
         int sub_volume_id = 1;
         int sub_volume_count = 1;
 
-        cvt::VtkImporter<cvt::NetCDF> importer( &input_netcdf );
-        std::cout << "  cell type: " << importer.cellType() << std::endl;
+        // ファイル形式がUGRIDの場合、ポリゴン用の処理
+        if ( reader_type == cvt::NetCDF::ReaderType::NetCDFUGRID )
+        {
+            cvt::VtkImporter<cvt::NetCDF, kvs::PolygonObject> importer( &input_netcdf );
+            if ( !importer.isSuccess() )
+            {
+                std::cerr << "Failed to import UGRID as a polygon object." << std::endl;
+                return;
+            }
 
-        kvs::UnstructuredVolumeObject* object = &importer;
-        object->print( std::cout, kvs::Indent( 4 ) );
+            kvs::PolygonObject* polygon_object = &importer;
+            polygon_object->print( std::cout, kvs::Indent( 2 ) );
 
-        std::cout << "  Writing to " << directory << " ..." << std::endl;
-        auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
+            std::string separator( 1, fs::path::preferred_separator );
+            std::string output_file_path = directory + separator + base + ".kvsml";
 
-        cvt::UnstructuredVolumeObjectExporter exporter( &importer );
-        exporter.setWritingDataTypeToExternalBinary();
-        exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
-        // or
-        // exporter.write( "<directory>/<local_base>_00000_0000001_0000001.kvsml" );
+            std::cout << "Writing " << output_file_path << " ..." << std::endl;
+            kvs::PolygonExporter<kvs::KVSMLPolygonObject> exporter( &importer );
+            exporter.setWritingDataTypeToExternalBinary();
+            exporter.write( output_file_path );
+        }
+        else
+        {
+            cvt::VtkImporter<cvt::NetCDF> importer( &input_netcdf );
+            std::cout << "  cell type: " << importer.cellType() << std::endl;
 
-        cvt::UnstructuredPfi pfi( object->veclen(), last_time_step, sub_volume_count );
-        pfi.registerObject( &exporter, time_step, sub_volume_id );
-        pfi.write( directory, local_base );
-        // or
-        // pfi.write( "<directory>/<local_base>.pfi" );
+            kvs::UnstructuredVolumeObject* object = &importer;
+            object->print( std::cout, kvs::Indent( 4 ) );
 
-        pfi.print( std::cout, 2 );
+            std::cout << "  Writing to " << directory << " ..." << std::endl;
+            auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
+
+            cvt::UnstructuredVolumeObjectExporter exporter( &importer );
+            exporter.setWritingDataTypeToExternalBinary();
+            exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
+            // or
+            // exporter.write( "<directory>/<local_base>_00000_0000001_0000001.kvsml" );
+
+            cvt::UnstructuredPfi pfi( object->veclen(), last_time_step, sub_volume_count );
+            pfi.registerObject( &exporter, time_step, sub_volume_id );
+            pfi.write( directory, local_base );
+            // or
+            // pfi.write( "<directory>/<local_base>.pfi" );
+
+            pfi.print( std::cout, 2 );
+        }
     }
 
     return;
@@ -343,6 +377,11 @@ void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, 
         std::cerr << "Wildcards can be used in the SLAC mode file. "    << std::endl;
         std::cerr << "SLAC mesh file: " << src                          << std::endl;
         std::cerr << "SLAC mode file: " << sub_file_path                << std::endl;
+        return;
+    }
+    else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFUGRID )
+    {
+        std::cerr << "vtkNetCDFUGRIDReader does not support wildcards." << std::endl;
         return;
     }
     else
