@@ -168,6 +168,65 @@ bool GetIsAtmosphere()
     }
 }
 
+void SeriesNetCDFSLAC2KVSML( const std::string& directory, const std::string& base, const std::string& src, const std::string& mode_file_path )
+{
+    std::unordered_map<int, cvt::UnstructuredPfi> pfi_map;
+    cvt::NetCDF::ReaderType reader_type = cvt::NetCDF::ReaderType::SLAC;
+    int layer_thickness = cvt::NetCDF::DefaultMPASLayerThickness; // for MPAS
+    bool is_atmosphere = cvt::NetCDF::DefaultMPASIsAtmosphere; // for MPAS
+
+    cvt::NumeralSequenceFileNames sequence( mode_file_path );
+
+    int last_time_step = sequence.numberOfFiles() - 1;
+    int time_step = 0;
+    int sub_volume_id = 1;
+    int sub_volume_count = 1;
+
+    for ( const auto& filename : sequence.fileNames() )
+    {
+        std::cout << "Reading " << filename << " ..." << std::endl;
+        cvt::NetCDF netcdf( src, reader_type, filename, layer_thickness, is_atmosphere );
+
+        cvt::VtkImporter<cvt::NetCDF> importer( &netcdf );
+        std::cout << "  cell type: " << importer.cellType() << std::endl;
+
+        kvs::UnstructuredVolumeObject* object = &importer;
+        object->print( std::cout, kvs::Indent( 4 ) );
+
+        std::cout << "  Writing to " << directory << " ..." << std::endl;
+        auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
+
+        cvt::UnstructuredVolumeObjectExporter exporter( &importer );
+        exporter.setWritingDataTypeToExternalBinary();
+        exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
+
+        if ( time_step == 0 )
+        {
+            pfi_map.emplace(
+                static_cast<int>( object->cellType() ),
+                cvt::UnstructuredPfi( object->veclen(), last_time_step, sub_volume_count )
+            );
+        }
+
+        pfi_map.at( static_cast<int>( object->cellType() ) ).registerObject( &exporter, time_step, sub_volume_id );
+
+        time_step++;
+    }
+
+    cvt::Pfl pfl;
+    for ( auto& e : pfi_map )
+    {
+        std::string local_base = std::string( base ) + "_" + std::to_string( e.first );
+        e.second.write( directory, local_base );
+        e.second.print( std::cout );
+
+        pfl.registerPfi( directory, local_base );
+    }
+    pfl.write( directory, base );
+
+    return;
+}
+
 void NetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src )
 {
 
@@ -188,6 +247,7 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
     {
         layer_thickness = GetLayerThickness();
         is_atmosphere = GetIsAtmosphere();
+        sub_file_path = "";
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
@@ -198,35 +258,61 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
         sub_file_path = "";
     }
 
-    cvt::NetCDF input_netcdf( src, reader_type, sub_file_path, layer_thickness, is_atmosphere );
+    // 補助ファイルパスにワイルドカードが含まれている場合
+    if ( sub_file_path.find_first_of( "*" ) != std::string::npos )
+    {
+        if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
+        {
+            // SLACは単一メッシュと連番modeファイルの組み合わせを扱う。
+            SeriesNetCDFSLAC2KVSML( directory, base, src, sub_file_path );
+            return;
+        }
+        else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFCAM )
+        {
+            std::cerr << "The connectivity file does not support wildcards."
+                      << "vtkNetCDFCAMReader: " << sub_file_path << std::endl;
+            return;
+        }
+        else
+        {
+            std::cerr << "Unexpected wildcard in the sub file path. "
+                      << "File: " << __FILE__ << ", function: " << __func__
+                      << ", line: " << __LINE__ << std::endl;
+            return;
+        }
+    }
+    else
+    {
+        cvt::NetCDF input_netcdf( src, reader_type, sub_file_path, layer_thickness, is_atmosphere );
 
-    int time_step = 0;
-    int last_time_step = 0;
-    int sub_volume_id = 1;
-    int sub_volume_count = 1;
+        int time_step = 0;
+        int last_time_step = 0;
+        int sub_volume_id = 1;
+        int sub_volume_count = 1;
 
-    cvt::VtkImporter<cvt::NetCDF> importer( &input_netcdf );
-    std::cout << "  cell type: " << importer.cellType() << std::endl;
+        cvt::VtkImporter<cvt::NetCDF> importer( &input_netcdf );
+        std::cout << "  cell type: " << importer.cellType() << std::endl;
 
-    kvs::UnstructuredVolumeObject* object = &importer;
-    object->print( std::cout, kvs::Indent( 4 ) );
+        kvs::UnstructuredVolumeObject* object = &importer;
+        object->print( std::cout, kvs::Indent( 4 ) );
 
-    std::cout << "  Writing to " << directory << " ..." << std::endl;
-    auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
+        std::cout << "  Writing to " << directory << " ..." << std::endl;
+        auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
 
-    cvt::UnstructuredVolumeObjectExporter exporter( &importer );
-    exporter.setWritingDataTypeToExternalBinary();
-    exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
-    // or
-    // exporter.write( "<directory>/<local_base>_00000_0000001_0000001.kvsml" );
+        cvt::UnstructuredVolumeObjectExporter exporter( &importer );
+        exporter.setWritingDataTypeToExternalBinary();
+        exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
+        // or
+        // exporter.write( "<directory>/<local_base>_00000_0000001_0000001.kvsml" );
 
-    cvt::UnstructuredPfi pfi( object->veclen(), last_time_step, sub_volume_count );
-    pfi.registerObject( &exporter, time_step, sub_volume_id );
-    pfi.write( directory, local_base );
-    // or
-    // pfi.write( "<directory>/<local_base>.pfi" );
+        cvt::UnstructuredPfi pfi( object->veclen(), last_time_step, sub_volume_count );
+        pfi.registerObject( &exporter, time_step, sub_volume_id );
+        pfi.write( directory, local_base );
+        // or
+        // pfi.write( "<directory>/<local_base>.pfi" );
 
-    pfi.print( std::cout, 2 );
+        pfi.print( std::cout, 2 );
+    }
 
     return;
 }
@@ -253,7 +339,11 @@ void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, 
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
-        sub_file_path = GetModeFilePath();
+        std::cerr << "Wildcards cannot be used in the SLAC mesh file. " << std::endl;
+        std::cerr << "Wildcards can be used in the SLAC mode file. "    << std::endl;
+        std::cerr << "SLAC mesh file: " << src                          << std::endl;
+        std::cerr << "SLAC mode file: " << sub_file_path                << std::endl;
+        return;
     }
     else
     {

@@ -29,10 +29,14 @@
 #include "kvs/FileFormatBase"
 #include "kvs/Message"
 
+#include <vtkAppendFilter.h>
+#include <vtkCompositeDataIterator.h>
+#include <vtkCompositeDataSet.h>
 #include <vtkInformation.h>
 #include <vtkNetCDFCAMReader.h>
 #include <vtkNetCDFCFReader.h>
 #include <vtkNew.h>
+#include <vtkSLACReader.h>
 #include <vtkSmartPointer.h>
 #include <vtkStreamingDemandDrivenPipeline.h>
 #include <vtkStringArray.h>
@@ -152,6 +156,7 @@ public:
             case ReaderType::NetCDFUGRID:
                 break;
             case ReaderType::SLAC:
+                grid = readNetCDFSLAC( filename, m_sub_file_path );
                 break;
             }
 
@@ -412,6 +417,123 @@ private:
     {
         DirectNetCDFMPASReader reader( filename, m_layer_thickness, m_is_atmosphere );
         return reader.read();
+    }
+
+    vtkSmartPointer<vtkUnstructuredGrid> readNetCDFSLAC(
+        const std::string& mesh_file_path,
+        const std::string& mode_file_path )
+    {
+        if ( mesh_file_path.empty() )
+        {
+            throw std::invalid_argument( "SLAC mesh file path is empty." );
+        }
+
+        if ( mode_file_path.empty() )
+        {
+            throw std::invalid_argument( "SLAC mode file path is empty." );
+        }
+
+        vtkNew<vtkSLACReader> reader;
+        reader->SetMeshFileName( mesh_file_path.c_str() );
+        reader->AddModeFileName( mode_file_path.c_str() );
+
+        // KVSの非構造格子へ変換するため、線形四面体からなる内部領域だけを読み込む。
+        reader->ReadExternalSurfaceOff();
+        reader->ReadInternalVolumeOn();
+        reader->ReadMidpointsOff();
+        reader->UpdateInformation();
+
+        vtkInformation* output_information =
+            reader->GetOutputInformation( vtkSLACReader::VOLUME_OUTPUT );
+
+        if ( !output_information )
+        {
+            throw std::runtime_error( "Failed to get vtkSLACReader volume output information." );
+        }
+
+        // 時系列のmodeファイルでは先頭のtime stepを選択する。
+        auto* time_steps_key = vtkStreamingDemandDrivenPipeline::TIME_STEPS();
+
+        if ( output_information->Has( time_steps_key ) )
+        {
+            const int number_of_time_steps = output_information->Length( time_steps_key );
+
+            if ( number_of_time_steps < 1 )
+            {
+                throw std::runtime_error(
+                    "No time steps found in SLAC mode file: " + mode_file_path );
+            }
+
+            output_information->Set(
+                vtkStreamingDemandDrivenPipeline::UPDATE_TIME_STEP(),
+                output_information->Get( time_steps_key, 0 ) );
+        }
+
+        reader->Update( vtkSLACReader::VOLUME_OUTPUT );
+
+        vtkCompositeDataSet* volume = vtkCompositeDataSet::SafeDownCast(
+            reader->GetOutputDataObject( vtkSLACReader::VOLUME_OUTPUT ) );
+
+        if ( !volume )
+        {
+            throw std::runtime_error(
+                "vtkSLACReader did not produce a composite internal volume: " + mesh_file_path );
+        }
+
+        // SLACの内部領域はmaterialごとの複数ブロックとして出力されるため、
+        // 共有座標を統合して1つのvtkUnstructuredGridへ変換する。
+        vtkSmartPointer<vtkCompositeDataIterator> iterator;
+        iterator.TakeReference( volume->NewIterator() );
+        iterator->SkipEmptyNodesOn();
+
+        vtkNew<vtkAppendFilter> append_filter;
+        append_filter->MergePointsOn();
+        append_filter->SetTolerance( 0.0 );
+        append_filter->ToleranceIsAbsoluteOn();
+
+        int number_of_blocks = 0;
+        for ( iterator->InitTraversal(); !iterator->IsDoneWithTraversal();
+              iterator->GoToNextItem() )
+        {
+            vtkUnstructuredGrid* block =
+                vtkUnstructuredGrid::SafeDownCast( iterator->GetCurrentDataObject() );
+
+            if ( !block )
+            {
+                throw std::runtime_error(
+                    "SLAC internal volume contains a non-vtkUnstructuredGrid block." );
+            }
+
+            if ( block->GetNumberOfPoints() == 0 || block->GetNumberOfCells() == 0 )
+            {
+                continue;
+            }
+
+            append_filter->AddInputData( block );
+            ++number_of_blocks;
+        }
+
+        if ( number_of_blocks == 0 )
+        {
+            throw std::runtime_error(
+                "vtkSLACReader produced no non-empty internal volume blocks: " + mesh_file_path );
+        }
+
+        append_filter->Update();
+
+        vtkUnstructuredGrid* appended_grid = append_filter->GetOutput();
+
+        if ( !appended_grid || appended_grid->GetNumberOfPoints() == 0 ||
+             appended_grid->GetNumberOfCells() == 0 )
+        {
+            throw std::runtime_error(
+                "Failed to merge vtkSLACReader internal volume blocks: " + mesh_file_path );
+        }
+
+        vtkSmartPointer<vtkUnstructuredGrid> grid =
+            vtkSmartPointer<vtkUnstructuredGrid>::New();
+        grid->DeepCopy( appended_grid );
+        return grid;
     }
 
 private:
