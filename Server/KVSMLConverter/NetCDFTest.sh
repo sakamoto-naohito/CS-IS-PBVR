@@ -1,9 +1,14 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 
 # VTK NetCDFサンプルデータを単一ファイルとファイル系列として変換する。
 
-SCRIPT_DIRECTORY="${0:A:h}"
-SCRIPT_NAME="${0:t}"
+SCRIPT_PATH="$0"
+case "${SCRIPT_PATH}" in
+    */*) SCRIPT_DIRECTORY="${SCRIPT_PATH%/*}" ;;
+    *) SCRIPT_DIRECTORY="." ;;
+esac
+SCRIPT_DIRECTORY="$(cd -- "${SCRIPT_DIRECTORY}" && pwd -P)" || exit 2
+SCRIPT_NAME="${SCRIPT_PATH##*/}"
 DEFAULT_CONVERTER="${SCRIPT_DIRECTORY}/Example/Release/kvsml-converter"
 DEFAULT_DATA_DIRECTORY="${SCRIPT_DIRECTORY}/Example/Input/VTKSampleData/data"
 DEFAULT_OUTPUT_PARENT="${SCRIPT_DIRECTORY}/Example/Output"
@@ -32,12 +37,69 @@ SUCCESSFUL_COUNT=0
 TEMPORARY_DIRECTORY=""
 RESULTS_DIRECTORY=""
 
+# 関数: print_line
+# 役割: Bashとzshの両方で1行を標準出力へ表示する。
+print_line()
+{
+    printf '%s\n' "$1"
+}
+
+# 関数: absolute_path
+# 役割: 存在しない末尾部分を含むパスを、既存の親ディレクトリを基準に絶対化する。
+# 引数: 絶対化するパス
+# 出力: 絶対パス
+absolute_path()
+{
+    local input_path="$1"
+    local path="${input_path}"
+    local suffix=""
+    local parent
+    local current_directory
+
+    current_directory="$(pwd -P)" || return 1
+    case "${path}" in
+        /*) ;;
+        *) path="${current_directory}/${path}" ;;
+    esac
+
+    while [[ ! -d "${path}" ]]; do
+        parent="${path%/*}"
+        if [[ -z "${parent}" ]]; then
+            parent="/"
+        fi
+        if [[ "${parent}" == "${path}" ]]; then
+            return 1
+        fi
+        suffix="/${path##*/}${suffix}"
+        path="${parent}"
+    done
+
+    parent="$(cd -- "${path}" && pwd -P)" || return 1
+    if [[ "${parent}" == "/" ]]; then
+        print_line "/${suffix#/}"
+    else
+        print_line "${parent}${suffix}"
+    fi
+}
+
+# 関数: quote_for_display
+# 役割: コマンド表示用に、パスをBashとzshで共通のシングルクォート形式へ変換する。
+# 引数: クォートする文字列
+quote_for_display()
+{
+    local value="$1"
+
+    printf '%s' "'"
+    printf '%s' "${value}" | sed "s/'/'\\\\''/g"
+    printf '%s' "'"
+}
+
 # 関数: print_usage
 # 役割: コマンドラインの使用方法を標準出力へ表示する。
 # 引数: なし
 print_usage()
 {
-    print -r -- "Usage: ${SCRIPT_NAME} [--converter PATH] [--data-directory PATH] [--output-root PATH]"
+    print_line "Usage: ${SCRIPT_NAME} [--converter PATH] [--data-directory PATH] [--output-root PATH]"
 }
 
 # 関数: parse_arguments
@@ -49,7 +111,7 @@ parse_arguments()
         case "$1" in
             --converter)
                 if (( $# < 2 )); then
-                    print -u2 -r -- "--converter requires a path"
+                    print_line "--converter requires a path" >&2
                     return 2
                 fi
                 CONVERTER="$2"
@@ -57,7 +119,7 @@ parse_arguments()
                 ;;
             --data-directory)
                 if (( $# < 2 )); then
-                    print -u2 -r -- "--data-directory requires a path"
+                    print_line "--data-directory requires a path" >&2
                     return 2
                 fi
                 DATA_DIRECTORY="$2"
@@ -65,7 +127,7 @@ parse_arguments()
                 ;;
             --output-root)
                 if (( $# < 2 )); then
-                    print -u2 -r -- "--output-root requires a path"
+                    print_line "--output-root requires a path" >&2
                     return 2
                 fi
                 OUTPUT_ROOT="$2"
@@ -76,7 +138,7 @@ parse_arguments()
                 return 0
                 ;;
             *)
-                print -u2 -r -- "Unknown argument: $1"
+                print_line "Unknown argument: $1" >&2
                 print_usage >&2
                 return 2
                 ;;
@@ -91,16 +153,16 @@ parse_arguments()
 # 結果: 出力先が既存の場合を含む準備エラーは2を返す。
 resolve_paths()
 {
-    CONVERTER="${CONVERTER:A}"
-    DATA_DIRECTORY="${DATA_DIRECTORY:A}"
+    CONVERTER="$(absolute_path "${CONVERTER}")" || return 2
+    DATA_DIRECTORY="$(absolute_path "${DATA_DIRECTORY}")" || return 2
     if [[ -z "${OUTPUT_ROOT}" ]]; then
         TIMESTAMP="$(date '+%Y%m%d%H%M%S')"
         OUTPUT_ROOT="${DEFAULT_OUTPUT_PARENT}/VTKSampleData${TIMESTAMP}"
     fi
-    OUTPUT_ROOT="${OUTPUT_ROOT:A}"
+    OUTPUT_ROOT="$(absolute_path "${OUTPUT_ROOT}")" || return 2
 
     if [[ -e "${OUTPUT_ROOT}" ]]; then
-        print -u2 -r -- "The output root already exists: ${OUTPUT_ROOT}"
+        print_line "The output root already exists: ${OUTPUT_ROOT}" >&2
         return 2
     fi
 
@@ -112,7 +174,7 @@ resolve_paths()
 # 結果: 一時ディレクトリを作成できない場合は2を返す。
 prepare_environment()
 {
-    # .zshrcに依存せず、zsh起動後に設定してコンバーターへ直接継承させる。
+    # シェルの設定ファイルに依存せず、コンバーターへ直接継承させる。
     VTK_LIBRARY_DIRECTORY="${VTK_LIB_PATH:-${DEFAULT_VTK_LIBRARY_DIRECTORY}}"
     export DYLD_LIBRARY_PATH="${VTK_LIBRARY_DIRECTORY}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
@@ -158,7 +220,7 @@ run_converter()
     local return_code
 
     if [[ -n "${auxiliary_path}" ]]; then
-        print -r -- "${auxiliary_path}" |
+        print_line "${auxiliary_path}" |
             "${CONVERTER}" "${primary_path}" "${output_directory}" \
                 > "${stdout_file}" 2> "${stderr_file}"
         return_code=$?
@@ -168,7 +230,7 @@ run_converter()
         return_code=$?
     fi
 
-    print -r -- "${return_code}" > "${return_code_file}"
+    print_line "${return_code}" > "${return_code_file}"
     return 0
 }
 
@@ -223,21 +285,21 @@ validate_generated_files()
         esac
     done < "${generated_file}"
 
-    print -r -- "${kvsml_count}" > "${result_directory}/kvsml-count"
-    print -r -- "${has_pfi}" > "${result_directory}/has-pfi"
-    print -r -- "${has_pfl}" > "${result_directory}/has-pfl"
+    print_line "${kvsml_count}" > "${result_directory}/kvsml-count"
+    print_line "${has_pfi}" > "${result_directory}/has-pfi"
+    print_line "${has_pfl}" > "${result_directory}/has-pfl"
 
     if (( kvsml_count != expected_count )); then
-        print -r -- "Expected ${expected_count} new KVSML file(s), but found ${kvsml_count}." >> "${diagnostics_file}"
+        print_line "Expected ${expected_count} new KVSML file(s), but found ${kvsml_count}." >> "${diagnostics_file}"
     fi
     if [[ "${expects_metadata}" == true && ( "${has_pfi}" != true || "${has_pfl}" != true ) ]]; then
-        print -r -- "Expected new PFI and PFL metadata files were not both found." >> "${diagnostics_file}"
+        print_line "Expected new PFI and PFL metadata files were not both found." >> "${diagnostics_file}"
     fi
     if [[ "${expects_metadata}" == false && ( "${has_pfi}" == true || "${has_pfl}" == true ) ]]; then
-        print -r -- "Polygon conversion unexpectedly generated volume PFI/PFL metadata." >> "${diagnostics_file}"
+        print_line "Polygon conversion unexpectedly generated volume PFI/PFL metadata." >> "${diagnostics_file}"
     fi
     if (( return_code != 0 )); then
-        print -r -- "The converter exited with status ${return_code}." >> "${diagnostics_file}"
+        print_line "The converter exited with status ${return_code}." >> "${diagnostics_file}"
     fi
 }
 
@@ -259,15 +321,15 @@ validate_case_specific_result()
     if [[ "${case_name}" == "CAM" && -n "${auxiliary_input}" ]]; then
         prompt_count="$(grep -F -c -- 'Enter the CAM connectivity file path:' "${stdout_file}")"
         if (( prompt_count != 1 )); then
-            print -r -- "Expected the CAM connectivity prompt exactly once, but found it ${prompt_count} time(s)." >> "${diagnostics_file}"
+            print_line "Expected the CAM connectivity prompt exactly once, but found it ${prompt_count} time(s)." >> "${diagnostics_file}"
         fi
     fi
 
     if [[ "${case_name}" == "CAM" && "${case_mode}" == "series" ]]; then
-        for step in {0..2}; do
+        for (( step = 0; step <= 2; step += 1 )); do
             step_token="$(printf '_%05d' "${step}")"
             if ! grep -E '\.kvsml$' "${generated_file}" | grep -F -q -- "${step_token}"; then
-                print -r -- "CAM series output is missing PBVR time step ${step}." >> "${diagnostics_file}"
+                print_line "CAM series output is missing PBVR time step ${step}." >> "${diagnostics_file}"
             fi
         done
     fi
@@ -286,14 +348,14 @@ determine_case_result()
 
     if [[ ! -s "${diagnostics_file}" ]]; then
         case_result="Success"
-        print -r -- "[SUCCESS] ${case_name} / ${case_mode}"
+        print_line "[SUCCESS] ${case_name} / ${case_mode}"
         (( SUCCESSFUL_COUNT += 1 ))
     else
         case_result="Failure"
-        print -r -- "[FAILURE] ${case_name} / ${case_mode}"
+        print_line "[FAILURE] ${case_name} / ${case_mode}"
     fi
 
-    print -r -- "${case_result}" > "${result_file}"
+    print_line "${case_result}" > "${result_file}"
 }
 
 # 関数: run_test_case
@@ -333,19 +395,19 @@ run_test_case()
     if [[ -n "${auxiliary_input}" ]]; then
         auxiliary_path="${DATA_DIRECTORY}/${auxiliary_input}"
     fi
-    command_text="${(q)CONVERTER} ${(q)primary_path} ${(q)output_directory}"
+    command_text="$(quote_for_display "${CONVERTER}") $(quote_for_display "${primary_path}") $(quote_for_display "${output_directory}")"
 
-    print -r -- "${case_spec}" > "${result_directory}/case-spec"
-    print -r -- "${case_name}" > "${result_directory}/case-name"
-    print -r -- "${case_mode}" > "${result_directory}/case-mode"
-    print -r -- "${primary_input}" > "${result_directory}/primary-input"
-    print -r -- "${primary_path}" > "${result_directory}/primary-path"
-    print -r -- "${expected_count}" > "${result_directory}/expected-kvsml-count"
-    print -r -- "${auxiliary_input}" > "${result_directory}/auxiliary-input"
-    print -r -- "${auxiliary_path}" > "${result_directory}/auxiliary-path"
-    print -r -- "${expects_metadata}" > "${result_directory}/expects-pfi-pfl"
-    print -r -- "${command_text}" > "${result_directory}/command"
-    print -r -- "${output_directory}" > "${result_directory}/output-directory"
+    print_line "${case_spec}" > "${result_directory}/case-spec"
+    print_line "${case_name}" > "${result_directory}/case-name"
+    print_line "${case_mode}" > "${result_directory}/case-mode"
+    print_line "${primary_input}" > "${result_directory}/primary-input"
+    print_line "${primary_path}" > "${result_directory}/primary-path"
+    print_line "${expected_count}" > "${result_directory}/expected-kvsml-count"
+    print_line "${auxiliary_input}" > "${result_directory}/auxiliary-input"
+    print_line "${auxiliary_path}" > "${result_directory}/auxiliary-path"
+    print_line "${expects_metadata}" > "${result_directory}/expects-pfi-pfl"
+    print_line "${command_text}" > "${result_directory}/command"
+    print_line "${output_directory}" > "${result_directory}/output-directory"
 
     stdout_file="${result_directory}/stdout"
     stderr_file="${result_directory}/stderr"
@@ -409,15 +471,15 @@ run_all_test_cases()
 # 出力: 標準出力（write_reportからReport.mdへリダイレクトされる）。
 write_report_header()
 {
-    print -r -- "# KVSMLConverter VTK Sample Data Conversion Report"
-    print -r -- ""
-    print -r -- "- Converter: \`${CONVERTER}\`"
-    print -r -- "- Input directory: \`${DATA_DIRECTORY}\`"
-    print -r -- "- Single-file input: timestep 0"
-    print -r -- '- Series input: literal `*` wildcard passed to the converter'
-    print -r -- "- Assumption: one timestep and one subvolume per input file"
-    print -r -- "- Result: ${SUCCESSFUL_COUNT}/${#CASES[@]} cases succeeded"
-    print -r -- ""
+    print_line "# KVSMLConverter VTK Sample Data Conversion Report"
+    print_line ""
+    print_line "- Converter: \`${CONVERTER}\`"
+    print_line "- Input directory: \`${DATA_DIRECTORY}\`"
+    print_line "- Single-file input: timestep 0"
+    print_line '- Series input: literal `*` wildcard passed to the converter'
+    print_line "- Assumption: one timestep and one subvolume per input file"
+    print_line "- Result: ${SUCCESSFUL_COUNT}/${#CASES[@]} cases succeeded"
+    print_line ""
 }
 
 # 関数: write_report_summary
@@ -433,10 +495,10 @@ write_report_summary()
     local return_code
     local kvsml_count
 
-    print -r -- "## Summary"
-    print -r -- ""
-    print -r -- "| Format | Input mode | Result | Exit status | New KVSML files |"
-    print -r -- "| --- | --- | --- | ---: | ---: |"
+    print_line "## Summary"
+    print_line ""
+    print_line "| Format | Input mode | Result | Exit status | New KVSML files |"
+    print_line "| --- | --- | --- | ---: | ---: |"
 
     for (( case_index = 1; case_index <= ${#CASES[@]}; case_index += 1 )); do
         result_directory="${RESULTS_DIRECTORY}/${case_index}"
@@ -445,7 +507,7 @@ write_report_summary()
         case_result="$(<"${result_directory}/result")"
         return_code="$(<"${result_directory}/return-code")"
         kvsml_count="$(<"${result_directory}/kvsml-count")"
-        print -r -- "| ${case_name} | ${case_mode} | ${case_result} | ${return_code} | ${kvsml_count} |"
+        print_line "| ${case_name} | ${case_mode} | ${case_result} | ${return_code} | ${kvsml_count} |"
     done
 }
 
@@ -482,63 +544,63 @@ write_report_case_details()
         stdout_file="${result_directory}/stdout"
         stderr_file="${result_directory}/stderr"
 
-        print -r -- ""
-        print -r -- "## ${case_name} / ${case_mode}"
-        print -r -- ""
+        print_line ""
+        print_line "## ${case_name} / ${case_mode}"
+        print_line ""
         if [[ "${case_result}" == "Success" ]]; then
-            print -r -- "Success: generated ${expected_count} expected KVSML file(s)."
+            print_line "Success: generated ${expected_count} expected KVSML file(s)."
         else
-            print -r -- "Failure diagnostics:"
-            print -r -- ""
+            print_line "Failure diagnostics:"
+            print_line ""
             while IFS= read -r diagnostic; do
-                print -r -- "- ${diagnostic}"
+                print_line "- ${diagnostic}"
             done < "${diagnostics_file}"
         fi
 
-        print -r -- ""
-        print -r -- "Command:"
-        print -r -- ""
-        print -r -- '```console'
-        print -r -- "${command_text}"
-        print -r -- '```'
+        print_line ""
+        print_line "Command:"
+        print_line ""
+        print_line '```console'
+        print_line "${command_text}"
+        print_line '```'
 
         if [[ -n "${auxiliary_path}" ]]; then
-            print -r -- ""
-            print -r -- "Auxiliary input sent on standard input: \`${auxiliary_path}\`"
+            print_line ""
+            print_line "Auxiliary input sent on standard input: \`${auxiliary_path}\`"
         fi
 
-        print -r -- ""
-        print -r -- "Generated or updated files:"
-        print -r -- ""
+        print_line ""
+        print_line "Generated or updated files:"
+        print_line ""
         if [[ -s "${generated_file}" ]]; then
             while IFS= read -r generated_path; do
-                print -r -- "- \`${generated_path:t}\`"
+                print_line "- \`${generated_path##*/}\`"
             done < "${generated_file}"
         else
-            print -r -- "- None"
+            print_line "- None"
         fi
 
         if [[ "${case_result}" == "Failure" ]]; then
-            print -r -- ""
-            print -r -- "Standard output:"
-            print -r -- ""
-            print -r -- '```text'
+            print_line ""
+            print_line "Standard output:"
+            print_line ""
+            print_line '```text'
             if [[ -s "${stdout_file}" ]]; then
                 command cat "${stdout_file}"
             else
-                print -r -- "(no output)"
+                print_line "(no output)"
             fi
-            print -r -- '```'
-            print -r -- ""
-            print -r -- "Standard error:"
-            print -r -- ""
-            print -r -- '```text'
+            print_line '```'
+            print_line ""
+            print_line "Standard error:"
+            print_line ""
+            print_line '```text'
             if [[ -s "${stderr_file}" ]]; then
                 command cat "${stderr_file}"
             else
-                print -r -- "(no output)"
+                print_line "(no output)"
             fi
-            print -r -- '```'
+            print_line '```'
         fi
     done
 }
@@ -599,7 +661,7 @@ main()
     write_report
 
     # 6. 成功件数に基づいてプロセスの終了ステータスを決定する。
-    print -r -- "Report: ${REPORT_PATH}"
+    print_line "Report: ${REPORT_PATH}"
     determine_exit_status
 }
 
