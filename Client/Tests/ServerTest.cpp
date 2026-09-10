@@ -940,7 +940,7 @@ bool ServerTest::completeNetcdfAuxiliaryFileDialog(
     }
 
     ClientTests::setLineEditText( path_line_edit.data(), auxiliary_path );
-    const QString expected_path = QDir::toNativeSeparators( auxiliary_path );
+    const QString expected_path = auxiliary_path;
     if ( path_line_edit->text() != expected_path )
     {
         QTest::qFail(

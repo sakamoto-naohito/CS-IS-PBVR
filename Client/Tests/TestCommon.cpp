@@ -96,11 +96,10 @@ void setLineEditText( QLineEdit* line_edit, const QString& text )
     // ファイルパスはOS標準の区切り文字へ統一してからキー入力します。
     QVERIFY2( line_edit != nullptr, "Target line edit was not found" );
 
-    const QString normalized_text = QDir::toNativeSeparators( text );
     line_edit->setFocus();
     line_edit->clear();
-    QTest::keyClicks( line_edit, normalized_text );
-    QCOMPARE( line_edit->text(), normalized_text );
+    QTest::keyClicks( line_edit, text );
+    QCOMPARE( line_edit->text(), text );
 }
 
 void logStep( const QString& message )
