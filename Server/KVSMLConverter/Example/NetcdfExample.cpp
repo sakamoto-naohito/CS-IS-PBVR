@@ -20,6 +20,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <filesystem>
+#else
+#include <sys/stat.h>
+#endif
+
 #include "Exporter/StructuredVolumeObjectExporter.h"
 #include "Exporter/UnstructuredVolumeObjectExporter.h"
 #include "FileFormat/NetCDF/Netcdf.h"
@@ -42,8 +48,6 @@
 #include <vtkGlobFileNames.h>
 #include <vtkPointData.h>
 #include <vtkStringArray.h>
-
-#include <sys/stat.h>
 
 /**
  * @brief 時系列変換の事前検証で取得したNetCDFファイルの情報。
@@ -90,12 +94,36 @@ bool ExpandSlacModeInput( const std::string& input, std::vector<std::string>& pa
             candidates.push_back( names->GetValue( i ) );
     }
 
+#ifndef _WIN32
     std::set<std::pair<dev_t, ino_t>> identities;
+#endif
     for ( const auto& candidate : candidates )
     {
+#ifdef _WIN32
+        std::error_code filesystem_error;
+        if ( !std::filesystem::is_regular_file( candidate, filesystem_error ) ||
+             filesystem_error )
+        {
+            continue;
+        }
+
+        bool is_duplicate = false;
+        for ( const auto& path : paths )
+        {
+            filesystem_error.clear();
+            if ( std::filesystem::equivalent( candidate, path, filesystem_error ) &&
+                 !filesystem_error )
+            {
+                is_duplicate = true;
+                break;
+            }
+        }
+        if ( is_duplicate )
+#else
         struct stat status = {};
         if ( ::stat( candidate.c_str(), &status ) != 0 || !S_ISREG( status.st_mode ) ) continue;
         if ( !identities.emplace( status.st_dev, status.st_ino ).second )
+#endif
         {
             error = "The SLAC mode input contains duplicate paths to the same file: " +
                     candidate;
