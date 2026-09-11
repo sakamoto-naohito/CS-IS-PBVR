@@ -41,6 +41,9 @@ public:
     float   m_min_value;
     float   m_max_value;
     std::string m_file_path;
+#ifdef EXTEND_FILE_FORMAT
+    std::vector<std::string> m_file_path_list;
+#endif
     bool is_binary;
     std::vector<IngredientsStep> m_ingredient_step;
     
@@ -48,7 +51,7 @@ public:
 
 public:
     int loadPFI( const std::string& filename );
-    void setFilePath( std::string& filename, const int st, const int xvl );
+    bool setFilePath( std::string& filename, const int st, const int xvl );
 };
 
 

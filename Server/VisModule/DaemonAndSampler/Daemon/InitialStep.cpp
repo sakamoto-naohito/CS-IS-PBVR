@@ -211,11 +211,13 @@ void InitialStepCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-
             // generate point object start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 vismodule::PointObjectGenerator point_object_generator;
                 vismodule::PointObject* tmp_obj = nullptr;
@@ -408,11 +410,13 @@ void InitialStepCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-
             // generate point object start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 vismodule::PointObjectGenerator point_object_generator;
 

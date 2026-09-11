@@ -19,6 +19,11 @@
 #include <vismodule/Vector3>
 #include <vismodule/Directory>
 #include <vismodule/Value>
+#include <iostream>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
 
 #ifdef EXTEND_FILE_FORMAT 
 #include <kvs/extendedfileformat/VtkImporter>
@@ -200,29 +205,44 @@ StructuredVolumeImporter::StructuredVolumeImporter( const std::string& filename 
 #ifdef EXTEND_FILE_FORMAT 
 StructuredVolumeImporter::StructuredVolumeImporter( const std::string& filename, const int st, const int vl )
 {
-    std::string edit_filename = filename; // ファイル名編集用の文字列
-    std::string time_step_str = std::to_string( st ); // タイムステップを文字列に変換
-    size_t found_asterisk = edit_filename.find( '*' ); // ファイル名に時系列ファイルのアスタリスクが含まれているか確認
+    const std::string& edit_filename = filename;
 
-    // ファイルの拡張子を確認
-    size_t found_vtm = edit_filename.find( ".vtm" );
-    size_t found_vti = edit_filename.find( ".vti" );
+    static const std::vector<std::string> supported_extensions = {
+        ".vtm",
+        ".vti"
+    };
 
-    // 時系列ファイルの場合、アスタリスクをタイムステップに置換
-    if ( found_asterisk != std::string::npos )
+    std::optional<std::string> selected_extension;
+    const std::filesystem::path file_name = std::filesystem::path( filename ).filename();
+
+    for ( const auto& extension : supported_extensions )
     {
-        edit_filename.replace( found_asterisk, 1, time_step_str );
+        if ( file_name.string().find( extension ) == std::string::npos )
+        {
+            continue;
+        }
+
+        if ( !selected_extension || extension.size() > selected_extension->size() )
+        {
+            selected_extension = extension;
+        }
     }
-    
+
     std::cout << "edit_filename:" << edit_filename << std::endl;
 
-    if ( found_vtm != std::string::npos )
+    if ( !selected_extension )
+    {
+        std::cout << "This file extension is not yet supported" << std::endl;
+        return;
+    }
+
+    if ( *selected_extension == ".vtm" )
     {
         kvs::ExtendedFileFormat::VtkXmlMultiBlock* file_format = new kvs::ExtendedFileFormat::VtkXmlMultiBlock( edit_filename );
         this->import( *file_format, vl );
         delete file_format;
     }
-    else if ( found_vti != std::string::npos )
+    else if ( *selected_extension == ".vti" )
     {
         kvs::ExtendedFileFormat::VtkXmlImageData* file_format = new kvs::ExtendedFileFormat::VtkXmlImageData( edit_filename );
         this->import( *file_format, vl );

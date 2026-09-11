@@ -1,4 +1,8 @@
 #include <algorithm>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <vismodule/JobDispatcher>
 #include <vismodule/GenerateParticle>
@@ -87,11 +91,13 @@ void GenerateParticleCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-
             // generate point object start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 vismodule::PointObjectGenerator point_object_generator;
                 vismodule::PointObject* tmp_obj = nullptr;
@@ -284,11 +290,13 @@ void GenerateParticleCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-
             // generate point object start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 vismodule::PointObjectGenerator point_object_generator;
 
@@ -682,15 +690,48 @@ void generate_volume(
     vismodule::VolumeObjectBase*& volume
 )
 {
-    size_t found_kvsml = file_path.find(".kvsml");
-    size_t found_vtm   = file_path.find(".vtm");
-    size_t found_vtu   = file_path.find(".vtu");
-    size_t found_vti   = file_path.find(".vti");
-    size_t found_inp   = file_path.find(".inp");
-    size_t found_pvtu  = file_path.find(".pvtu");
-    size_t found_case  = file_path.find(".case");
+    // 対応している拡張子
+    static const std::vector<std::string> supported_extensions = {
+        ".kvsml",
+        // 現在非対応 ".xyz",
+        // 現在非対応 ".vtr",
+        // 現在非対応 ".vtk",
+        ".vti",
+        // 現在非対応 ".vts",
+        // 現在非対応 ".pvts",
+        ".inp",
+        ".vtu",
+        ".pvtu",
+        ".vtm",
+        ".case"
+    };
 
-    if ( found_kvsml != std::string::npos )
+    std::optional<std::string> selected_extension;         // 使用される拡張子を格納する
+    std::filesystem::path filename = std::filesystem::path( file_path ).filename(); // パスを除いたファイル名
+
+    for ( const auto& extension : supported_extensions )
+    {
+        // ファイル名に対応拡張子が存在するか
+        if ( filename.string().find( extension ) == std::string::npos )
+        {
+            continue;
+        }
+
+        // 最も長い拡張子を採用する
+        if ( !selected_extension || extension.size() > selected_extension->size() )
+        {
+            selected_extension = extension;
+        }
+    }
+
+    // 対応していない拡張子の場合、対応していないことを表示し終了
+    if ( !selected_extension )
+    {
+        std::cout << "This file extension is not yet supported" << std::endl;
+        return;
+    }
+
+    if ( selected_extension == ".kvsml" )
     {
         volume = new vismodule::UnstructuredVolumeImporter( file_path );
     
@@ -700,35 +741,36 @@ void generate_volume(
         volume = new vismodule::UnstructuredVolumeImporter( path_base, mvp.m_file_type, time_step, sub_volume_id );
     }
 #ifdef EXTEND_FILE_FORMAT
-    else if ( found_vtm != std::string::npos )
+    else if ( selected_extension == ".vtm" )
     {
         // structured
         if( mvp.m_file_type == 3 )
         {
-            volume = new vismodule::StructuredVolumeImporter( mvp.m_file_path, time_step, sub_volume_id );
+            volume = new vismodule::StructuredVolumeImporter( file_path, time_step, sub_volume_id );
         }
         // unstructured
         if( mvp.m_file_type == 4 )
         {
-            volume = new vismodule::UnstructuredVolumeImporter( mvp.m_file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
+            volume = new vismodule::UnstructuredVolumeImporter( file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
         }
     }
-    else if ( found_vtu  != std::string::npos ||
-              found_inp  != std::string::npos ||
-              found_pvtu != std::string::npos ||
-              found_case != std::string::npos
+    else if ( selected_extension == ".vtu"  ||
+              selected_extension == ".inp"  ||
+              selected_extension == ".pvtu" ||
+              selected_extension == ".case"
             )
     {
-        volume = new vismodule::UnstructuredVolumeImporter( mvp.m_file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
+        volume = new vismodule::UnstructuredVolumeImporter(
+            file_path, mvp.m_file_type, mvp.m_elem_type, time_step, sub_volume_id );
     }
-    else if ( found_vti != std::string::npos )
+    else if ( selected_extension == ".vti" )
     {
-        volume = new vismodule::StructuredVolumeImporter( mvp.m_file_path, time_step, sub_volume_id );
+        volume = new vismodule::StructuredVolumeImporter( file_path, time_step, sub_volume_id );
     }
 #endif
 
     // .vtm .pvtu .case file format
-    if ( ( found_vtm != std::string::npos ) || ( found_pvtu != std::string::npos ) || ( found_case != std::string::npos ) )
+    if ( ( selected_extension == ".vtm" ) || ( selected_extension == ".pvtu" ) || ( selected_extension == ".case" ) )
     {
         // Structured Volume Data
         if ( mvp.m_file_type == 3 )

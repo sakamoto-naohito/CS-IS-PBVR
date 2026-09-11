@@ -125,11 +125,13 @@ std::unique_ptr<vismodule::KVSMLObjectPlotOverLine> GeneratePOLCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-        
             // generate plot over line start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 PlotOverLineGenerator pol_generator;
 

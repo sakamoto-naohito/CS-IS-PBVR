@@ -1,6 +1,13 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <filesystem>
+#include <iomanip>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <vismodule/MultiVolumeProperty>
 #include <vismodule/File>
@@ -9,7 +16,7 @@
 
 #ifdef EXTEND_FILE_FORMAT 
 #include <kvs/extendedfileformat/VtkXmlMultiBlock>
-#include <kvs/extendedfileformat/NumeralSequenceFiles>
+#include <kvs/extendedfileformat/NumeralSequenceFileNames>
 #include <kvs/extendedfileformat/VtkXmlUnstructuredGrid>
 #include <kvs/extendedfileformat/VtkImporter>
 #include <kvs/extendedfileformat/VtkXmlImageData>
@@ -267,18 +274,41 @@ int MultiVolumeProperty::loadPFI( const std::string& filename )
 }
 
 
-void MultiVolumeProperty::setFilePath(std::string& filename ,const int st , const int xvl)
+bool MultiVolumeProperty::setFilePath(std::string& filename ,const int st , const int xvl)
 {
-    
-    size_t found_pfi  = m_file_path.find(".pfi");
-    size_t found_vtm  = m_file_path.find(".vtm");
-    size_t found_vtu  = m_file_path.find(".vtu");
-    size_t found_vti  = m_file_path.find(".vti");
-    size_t found_inp  = m_file_path.find(".inp");
-    size_t found_pvtu = m_file_path.find(".pvtu");
-    size_t found_case = m_file_path.find(".case");
+    static const std::vector<std::string> supported_extensions = {
+        ".pfi",
+        ".vtm",
+        ".vtu",
+        ".vti",
+        ".inp",
+        ".pvtu",
+        ".case"
+    };
 
-    if ( found_pfi != std::string::npos )
+    std::optional<std::string> selected_extension;
+    const std::filesystem::path file_name = std::filesystem::path( m_file_path ).filename();
+
+    for ( const auto& extension : supported_extensions )
+    {
+        if ( file_name.string().find( extension ) == std::string::npos )
+        {
+            continue;
+        }
+
+        if ( !selected_extension || extension.size() > selected_extension->size() )
+        {
+            selected_extension = extension;
+        }
+    }
+
+    if ( !selected_extension )
+    {
+        std::cout << "This file extension is not yet supported" << std::endl;
+        return false;
+    }
+
+    if ( selected_extension == ".pfi" )
     {
         std::stringstream suffix;
         suffix << '_' << std::setw( 5 ) << std::setfill( '0' ) << ( st )
@@ -288,25 +318,46 @@ void MultiVolumeProperty::setFilePath(std::string& filename ,const int st , cons
         //param.m_input_data = ifpx.pathName() + ifpx.Separator()
         filename = ifpx.pathName() + ifpx.Separator()
             + ifpx.baseName() + suffix.str() + ".kvsml";
+        return true;
     }
 #ifdef EXTEND_FILE_FORMAT 
-    else if ( found_vtm  != std::string::npos ||
-            found_vtu  != std::string::npos ||
-            found_vti  != std::string::npos ||
-            found_inp  != std::string::npos ||
-            found_pvtu != std::string::npos || 
-            found_case != std::string::npos 
-            )
-    {
-        //param.m_input_data = mvp.m_file_path;
-        filename = m_file_path;
-    }
-#endif
     else
     {
-        std::cout << "このファイルは現在対応していません" << std::endl;
-    }
+        if ( *selected_extension == ".vtm" ||
+             *selected_extension == ".vtu" ||
+             *selected_extension == ".vti" ||
+             *selected_extension == ".inp" ||
+             *selected_extension == ".pvtu" ||
+             *selected_extension == ".case" )
+        {
+            if ( !m_file_path_list.empty() )
+            {
+                const int index = st - m_start_step;
+                if ( index < 0 || static_cast<size_t>( index ) >= m_file_path_list.size() )
+                {
+                    std::ostringstream message;
+                    message << "Time step " << st << " is outside the file list range ["
+                            << m_start_step << ", "
+                            << ( m_start_step + static_cast<int>( m_file_path_list.size() ) - 1 )
+                            << "] for '" << m_file_path << "'.";
+                    std::cerr << "ERROR: " << message.str() << std::endl;
+                    return false;
+                }
 
+                filename = m_file_path_list[static_cast<size_t>( index )];
+            }
+            else
+            {
+                filename = m_file_path;
+            }
+
+            return true;
+        }
+    }
+#endif
+
+    std::cout << "This file extension is not yet supported" << std::endl;
+    return false;
 }
 
 //--------------------------------------------------------------------------
@@ -762,9 +813,19 @@ int MultiVolumePropertyList::loadVtm( const std::string& filename )
 
 int MultiVolumePropertyList::loadSeriesVtm( const std::string& filename )
 {
-    std::string filepath = ConvertToUnixPath(filename);
-    kvs::ExtendedFileFormat::NumeralSequenceFiles<kvs::ExtendedFileFormat::VtkXmlMultiBlock> time_series( filepath );
-    int last_time_step = time_series.numberOfFiles() - 1;
+    kvs::ExtendedFileFormat::NumeralSequenceFileNames sequence(
+        ConvertToUnixPath( filename ) );
+    const auto file_names = sequence.fileNames();
+    if ( file_names.empty() )
+    {
+        std::cerr << "ERROR: No files matched the VTM pattern: " << filename << std::endl;
+        m_list.clear();
+        m_total_min_subvolume_coord.clear();
+        m_total_max_subvolume_coord.clear();
+        return -1;
+    }
+
+    int last_time_step = static_cast<int>( file_names.size() ) - 1;
     int time_step = 0;
     std::unordered_map<int, int> sub_volume_ids;
     std::unordered_map<int, int> sub_volume_counts;
@@ -784,8 +845,9 @@ int MultiVolumePropertyList::loadSeriesVtm( const std::string& filename )
     m_total_min_subvolume_coord.clear();
     m_total_max_subvolume_coord.clear();
     
-    for ( auto input_vtm : time_series.eachTimeStep() )
+    for ( const auto& file_name : file_names )
     {
+        kvs::ExtendedFileFormat::VtkXmlMultiBlock input_vtm( file_name );
         if ( time_step == 0 )
         {
             for ( auto format : input_vtm.eachBlock() )
@@ -1254,9 +1316,19 @@ int MultiVolumePropertyList::loadVtu( const std::string& filename )
 
 int MultiVolumePropertyList::loadSeriesVtu( const std::string& filename )
 {
-    std::string filepath = ConvertToUnixPath(filename);
-    kvs::ExtendedFileFormat::NumeralSequenceFiles<kvs::ExtendedFileFormat::VtkXmlUnstructuredGrid> time_series( filepath );
-    int last_time_step = time_series.numberOfFiles() - 1;
+    kvs::ExtendedFileFormat::NumeralSequenceFileNames sequence(
+        ConvertToUnixPath( filename ) );
+    const auto file_names = sequence.fileNames();
+    if ( file_names.empty() )
+    {
+        std::cerr << "ERROR: No files matched the VTU pattern: " << filename << std::endl;
+        m_list.clear();
+        m_total_min_subvolume_coord.clear();
+        m_total_max_subvolume_coord.clear();
+        return -1;
+    }
+
+    int last_time_step = static_cast<int>( file_names.size() ) - 1;
     int time_step = 0;
     int sub_volume_id = 0;
     int sub_volume_count = 1;
@@ -1274,8 +1346,9 @@ int MultiVolumePropertyList::loadSeriesVtu( const std::string& filename )
     m_total_min_subvolume_coord.clear();
     m_total_max_subvolume_coord.clear();
 
-    for ( auto whole_vtu : time_series.eachTimeStep() )
-    {        
+    for ( const auto& file_name : file_names )
+    {
+        kvs::ExtendedFileFormat::VtkXmlUnstructuredGrid whole_vtu( file_name );
         for ( auto vtu : whole_vtu.eachCellType() )
         {
             kvs::ExtendedFileFormat::VtkImporter<kvs::ExtendedFileFormat::VtkXmlUnstructuredGrid> importer( &vtu );
@@ -1513,9 +1586,19 @@ int MultiVolumePropertyList::loadVti( const std::string& filename )
 
 int MultiVolumePropertyList::loadSeriesVti( const std::string& filename )
 {
-    std::string filepath = ConvertToUnixPath(filename);
-    kvs::ExtendedFileFormat::NumeralSequenceFiles<kvs::ExtendedFileFormat::VtkXmlImageData> time_series( filepath );
-    int last_time_step = time_series.numberOfFiles() - 1;
+    kvs::ExtendedFileFormat::NumeralSequenceFileNames sequence(
+        ConvertToUnixPath( filename ) );
+    const auto file_names = sequence.fileNames();
+    if ( file_names.empty() )
+    {
+        std::cerr << "ERROR: No files matched the VTI pattern: " << filename << std::endl;
+        m_list.clear();
+        m_total_min_subvolume_coord.clear();
+        m_total_max_subvolume_coord.clear();
+        return -1;
+    }
+
+    int last_time_step = static_cast<int>( file_names.size() ) - 1;
     int time_step = 0;
     int sub_volume_id = 0;
     int sub_volume_count = 1;
@@ -1539,8 +1622,9 @@ int MultiVolumePropertyList::loadSeriesVti( const std::string& filename )
     m_total_min_subvolume_coord.clear();
     m_total_max_subvolume_coord.clear();
 
-    for ( auto vti : time_series.eachTimeStep() )
+    for ( const auto& file_name : file_names )
     {
+        kvs::ExtendedFileFormat::VtkXmlImageData vti( file_name );
         kvs::ExtendedFileFormat::VtkImporter<kvs::ExtendedFileFormat::VtkXmlImageData> importer( &vti );
         kvs::StructuredVolumeObject* object = &importer;
         kvs::Vec3ui resolution = object->resolution();
@@ -2054,9 +2138,19 @@ int MultiVolumePropertyList::loadPvtu( const std::string& filename )
 }
 int MultiVolumePropertyList::loadSeriesPvtu( const std::string& filename )
 {
-    std::string filepath = ConvertToUnixPath(filename);
-    kvs::ExtendedFileFormat::NumeralSequenceFiles<kvs::ExtendedFileFormat::VtkXmlPUnstructuredGrid> time_series( filepath );
-    int last_time_step = time_series.numberOfFiles() - 1;
+    kvs::ExtendedFileFormat::NumeralSequenceFileNames sequence(
+        ConvertToUnixPath( filename ) );
+    const auto file_names = sequence.fileNames();
+    if ( file_names.empty() )
+    {
+        std::cerr << "ERROR: No files matched the PVTU pattern: " << filename << std::endl;
+        m_list.clear();
+        m_total_min_subvolume_coord.clear();
+        m_total_max_subvolume_coord.clear();
+        return -1;
+    }
+
+    int last_time_step = static_cast<int>( file_names.size() ) - 1;
     int time_step = 0;
     std::unordered_map<int, int> sub_volume_ids;
     std::unordered_map<int, int> sub_volume_counts;
@@ -2074,8 +2168,9 @@ int MultiVolumePropertyList::loadSeriesPvtu( const std::string& filename )
     m_total_min_subvolume_coord.clear();
     m_total_max_subvolume_coord.clear();
 
-    for ( auto pvtu : time_series.eachTimeStep() )
+    for ( const auto& file_name : file_names )
     {
+        kvs::ExtendedFileFormat::VtkXmlPUnstructuredGrid pvtu( file_name );
         if ( time_step == 0 )
         {
             for ( auto vtu : pvtu.eachPiece() )
@@ -2574,170 +2669,221 @@ void MultiVolumePropertyList::cropTimeStep( const int s, const int e )
 
 void MultiVolumePropertyList::loadVolumeDataFile( const std::string& filename )
 {
-                    size_t found_pfl  = filename.find(".pfl");
-                    size_t found_pfi  = filename.find(".pfi");
-                    size_t found_vtm  = filename.find(".vtm");
-                    size_t found_vtu  = filename.find(".vtu");
-                    size_t found_vti  = filename.find(".vti");
-                    size_t found_inp  = filename.find(".inp");
-                    size_t found_pvtu = filename.find(".pvtu");
-                    size_t found_case = filename.find(".case");
+    static const std::vector<std::string> supported_extensions = {
+        ".pfl",
+        ".pfi",
+        ".vtm",
+        ".vtu",
+        ".vti",
+        ".inp",
+        ".pvtu",
+        ".case"
+    };
 
-                    if ( found_pfl != std::string::npos )
-                    {
-                        std::string pflfile = filename;
-                        std::cout << "pflファイルが選択されました" << std::endl;
-                        vismodule::File pfl( pflfile );
-                        if ( pfl.isExisted() )
-                        {
-                            this->loadPFL( pflfile );
-                        }
-                     }
-                    else if ( found_pfi != std::string::npos )
-                    {
-                        std::string pfifile = filename;
-                        std::cout << "pfiファイルが選択されました" << std::endl;
-                        vismodule::File pfi( pfifile );
-                        if ( pfi.isExisted() )
-                        {
-                            this->loadPFL( pfifile );
-                        }                        
-                    }
+    std::optional<std::string> selected_extension;
+    const std::filesystem::path file_name = std::filesystem::path( filename ).filename();
+
+    for ( const auto& extension : supported_extensions )
+    {
+        if ( file_name.string().find( extension ) == std::string::npos )
+        {
+            continue;
+        }
+
+        if ( !selected_extension || extension.size() > selected_extension->size() )
+        {
+            selected_extension = extension;
+        }
+    }
+
+    if ( !selected_extension )
+    {
+        std::cout << "This file extension is not yet supported" << std::endl;
+    }
+    else if ( *selected_extension == ".pfl" )
+    {
+        std::string pflfile = filename;
+        std::cout << "pflファイルが選択されました" << std::endl;
+        vismodule::File pfl( pflfile );
+        if ( pfl.isExisted() )
+        {
+            this->loadPFL( pflfile );
+        }
+        }
+    else if ( *selected_extension == ".pfi" )
+    {
+        std::string pfifile = filename;
+        std::cout << "pfiファイルが選択されました" << std::endl;
+        vismodule::File pfi( pfifile );
+        if ( pfi.isExisted() )
+        {
+            this->loadPFL( pfifile );
+        }
+    }
 #ifdef EXTEND_FILE_FORMAT
-                    else if ( found_vtm != std::string::npos )
-                    {
-                        std::string vtmfile = filename;
-                        std::cout << ".vtmファイルが選択されました" << std::endl;
-                        size_t found_asterisk = vtmfile.find( '*' );
+    else if ( *selected_extension == ".vtm" )
+    {
+        std::string vtmfile = filename;
+        std::cout << ".vtmファイルが選択されました" << std::endl;
+        size_t found_asterisk = vtmfile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(vtmfile.begin(), vtmfile.end(), '\\', '/');
+        std::replace(vtmfile.begin(), vtmfile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            std::cout << "単一ファイル" << std::endl;
-                            this->loadVtm( vtmfile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            std::cout << "連番ファイル" << std::endl;
-                            this->loadSeriesVtm( vtmfile );
-                        }
-                    }
-                    else if ( found_vtu != std::string::npos )
-                    {
-                        std::string vtufile = filename;
-                        std::cout << ".vtuファイルが選択されました" << std::endl;
-                        size_t found_asterisk = vtufile.find( '*' );
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            std::cout << "単一ファイル" << std::endl;
+            this->loadVtm( vtmfile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            std::cout << "連番ファイル" << std::endl;
+            this->loadSeriesVtm( vtmfile );
+        }
+    }
+    else if ( *selected_extension == ".vtu" )
+    {
+        std::string vtufile = filename;
+        std::cout << ".vtuファイルが選択されました" << std::endl;
+        size_t found_asterisk = vtufile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(vtufile.begin(), vtufile.end(), '\\', '/');
+        std::replace(vtufile.begin(), vtufile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            this->loadVtu( vtufile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            this->loadSeriesVtu( vtufile );
-                        }
-                    }
-                    else if ( found_vti != std::string::npos )
-                    {
-                        std::string vtifile = filename;
-                        std::cout << ".vtiファイルが選択されました" << std::endl;
-                        size_t found_asterisk = vtifile.find( '*' );
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            this->loadVtu( vtufile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            this->loadSeriesVtu( vtufile );
+        }
+    }
+    else if ( *selected_extension == ".vti" )
+    {
+        std::string vtifile = filename;
+        std::cout << ".vtiファイルが選択されました" << std::endl;
+        size_t found_asterisk = vtifile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(vtifile.begin(), vtifile.end(), '\\', '/');
+        std::replace(vtifile.begin(), vtifile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            this->loadVti( vtifile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            this->loadSeriesVti( vtifile );
-                        }
-                    }
-                    else if ( found_inp != std::string::npos )
-                    {
-                        std::string inpfile = filename;
-                        std::cout << ".inpファイルが選択されました" << std::endl;
-                        size_t found_asterisk = inpfile.find( '*' );
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            this->loadVti( vtifile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            this->loadSeriesVti( vtifile );
+        }
+    }
+    else if ( *selected_extension == ".inp" )
+    {
+        std::string inpfile = filename;
+        std::cout << ".inpファイルが選択されました" << std::endl;
+        size_t found_asterisk = inpfile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(inpfile.begin(), inpfile.end(), '\\', '/');
+        std::replace(inpfile.begin(), inpfile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            this->loadInp( inpfile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            std::cout << ".inpファイルは連番ファイルに対応していません" << std::endl;
-                        }
-                    }
-                    else if ( found_pvtu != std::string::npos )
-                    {
-                        std::string pvtufile = filename;
-                        std::cout << ".pvtuファイルが選択されました" << std::endl;
-                        size_t found_asterisk = pvtufile.find( '*' );
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            this->loadInp( inpfile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            std::cout << ".inpファイルは連番ファイルに対応していません" << std::endl;
+        }
+    }
+    else if ( *selected_extension == ".pvtu" )
+    {
+        std::string pvtufile = filename;
+        std::cout << ".pvtuファイルが選択されました" << std::endl;
+        size_t found_asterisk = pvtufile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(pvtufile.begin(), pvtufile.end(), '\\', '/');
+        std::replace(pvtufile.begin(), pvtufile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            this->loadPvtu( pvtufile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            this->loadSeriesPvtu( pvtufile );
-                        }
-                    }
-                    else if ( found_case != std::string::npos )
-                    {
-                        std::string casefile = filename;
-                        std::cout << ".caseファイルが選択されました" << std::endl;
-                        size_t found_asterisk = casefile.find( '*' );
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            this->loadPvtu( pvtufile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            this->loadSeriesPvtu( pvtufile );
+        }
+    }
+    else if ( *selected_extension == ".case" )
+    {
+        std::string casefile = filename;
+        std::cout << ".caseファイルが選択されました" << std::endl;
+        size_t found_asterisk = casefile.find( '*' );
 
 #ifdef _WIN32
-                        std::replace(casefile.begin(), casefile.end(), '\\', '/');
+        std::replace(casefile.begin(), casefile.end(), '\\', '/');
 #endif
 
-                        // 単一ファイルの場合
-                        if ( found_asterisk == std::string::npos )
-                        {
-                            this->loadEnsightGold( casefile );
-                        }
-                        // 連番ファイルの場合
-                        else
-                        {
-                            std::cout << ".caseファイルは連番ファイルに対応していません" << std::endl;
-                        }
-                    }
+        // 単一ファイルの場合
+        if ( found_asterisk == std::string::npos )
+        {
+            this->loadEnsightGold( casefile );
+        }
+        // 連番ファイルの場合
+        else
+        {
+            std::cout << ".caseファイルは連番ファイルに対応していません" << std::endl;
+        }
+    }
 #endif
-                    else
-                    {
-                        std::cout << "このファイルは現在対応していません" << std::endl;
-                    }
-                    
+    else if ( *selected_extension != ".pfl" && *selected_extension != ".pfi" )
+    {
+        std::cout << "This file extension is not yet supported" << std::endl;
+    }
 
+#ifdef EXTEND_FILE_FORMAT
+    const bool is_supported_series_pattern =
+        selected_extension &&
+        ( *selected_extension == ".vtm" ||
+            *selected_extension == ".vtu" ||
+            *selected_extension == ".vti" ||
+            *selected_extension == ".pvtu" );
+
+    if ( filename.find( '*' ) != std::string::npos &&
+            is_supported_series_pattern && !m_list.empty() )
+    {
+        kvs::ExtendedFileFormat::NumeralSequenceFileNames sequence(
+            ConvertToUnixPath( filename ) );
+        const auto file_names = sequence.fileNames();
+        if ( file_names.empty() )
+        {
+            std::cerr << "ERROR: No files matched the volume file pattern: "
+                        << filename << std::endl;
+            m_list.clear();
+            m_total_min_subvolume_coord.clear();
+            m_total_max_subvolume_coord.clear();
+        }
+        else
+        {
+            for ( auto& mvp : m_list )
+            {
+                mvp.m_file_path_list = file_names;
+            }
+        }
+    }
+#endif
 }
-

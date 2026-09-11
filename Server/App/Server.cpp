@@ -14,6 +14,10 @@
 #include <vismodule/ParameterFileReader>
 #include <vismodule/ParameterFileWriter>
 
+#ifdef EXTEND_FILE_FORMAT
+#include <kvs/extendedfileformat/NumeralSequenceFileNames>
+#endif
+
 namespace
 {
 std::string EnvValueOrUnset( const char* name )
@@ -431,43 +435,24 @@ void Server::initialize(uWS::WebSocket<false, true, PerSocket>* ws, const nlohma
         // ファイルパスにワイルドカードが含まれている場合
         if (volumeDataNativeFilePath.find('*') != std::string::npos)
         {
-            auto dir = fileSystemPath.parent_path();
-            auto filename = fileSystemPath.filename().string();
+#ifdef EXTEND_FILE_FORMAT
+            const auto file_names = kvs::ExtendedFileFormat::NumeralSequenceFileNames(
+                fileSystemPath.generic_string() ).fileNames();
 
-            // ディレクトリが存在する場合
-            if (std::filesystem::exists(dir))
+            if ( file_names.empty() )
             {
-                // アスタリスクを数値の正規表現に変換
-                std::string regexStr = std::regex_replace(filename, std::regex("\\*"), "[0-9]+");
-                std::cout << "regexStr:" << regexStr << std::endl;
-                std::regex pattern(regexStr);
-                bool isFileFound = false;
-
-                // ディレクトリ内のファイルを走査
-                for (const auto& entry : std::filesystem::directory_iterator(dir))
-                {
-                    if (std::regex_match(entry.path().filename().string(), pattern))
-                    {
-                        isFileFound = true;
-                        std::cout << "INFO: The volume object file is found.(rank:" << m_mpi_rank << ")" << std::endl;
-                    }
-                }
-
-                // ファイルが見つからなかった場合
-                if (!isFileFound)
-                {
-                    std::cerr << "ERROR: The volume object file doesn't exist.(rank:" << m_mpi_rank << ")" << std::endl;
-                    std::cerr << "INFO: volume object file: " << volumeDataNativeFilePath << "(rank:" << m_mpi_rank << ")" << std::endl;
-                    isFileLoadSuccess = false;
-                }
-            }
-            // ディレクトリが存在しない場合
-            else
-            {
-                std::cerr << "ERROR: The directory for the volume object file path doesn't exist.(rank:" << m_mpi_rank << ")" << std::endl;
-                std::cerr << "INFO: Directory path: " << dir << "(rank:" << m_mpi_rank << ")" << std::endl;
+                std::cerr << "ERROR: The volume object file doesn't exist.(rank:" << m_mpi_rank << ")" << std::endl;
+                std::cerr << "INFO: volume object file: " << volumeDataNativeFilePath << "(rank:" << m_mpi_rank << ")" << std::endl;
                 isFileLoadSuccess = false;
             }
+            else
+            {
+                std::cout << "INFO: The volume object file is found.(rank:" << m_mpi_rank << ")" << std::endl;
+            }
+#else
+            std::cerr << "ERROR: Wildcard volume paths require EXTEND_FILE_FORMAT.(rank:" << m_mpi_rank << ")" << std::endl;
+            isFileLoadSuccess = false;
+#endif
         }
         // ファイルパスにワイルドカードが含まれていない場合
         else

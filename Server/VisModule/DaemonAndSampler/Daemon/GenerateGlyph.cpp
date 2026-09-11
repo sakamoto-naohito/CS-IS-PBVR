@@ -161,11 +161,13 @@ std::unique_ptr<kvs::PolygonGlyphObject> GenerateGlyphCS(
             int xvl, fidx;
             fidx = mvpl.getFileIndex( vl, &xvl );
             MultiVolumeProperty& mvp = mvpl.m_list[fidx];
-            mvp.setFilePath( file_path, st, xvl );
-
             // generate glyph start
             try
             {
+                if ( !mvp.setFilePath( file_path, st, xvl ) )
+                {
+                    throw std::runtime_error( "Failed to resolve the volume file path." );
+                }
                 vismodule::VolumeObjectBase* volume = nullptr;
                 vismodule::GlyphSeedGenerator glyph_creator;
 
