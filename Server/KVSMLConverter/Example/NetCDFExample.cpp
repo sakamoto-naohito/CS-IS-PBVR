@@ -91,9 +91,9 @@ std::string GetConnectivityFilePath()
     return file_path;
 }
 
-std::string GetModeFilePath()
+std::string GetMeshFilePath()
 {
-    std::cout << "Input mode file path: ";
+    std::cout << "Input mesh file path: ";
 
     std::string file_path;
     std::getline( std::cin >> std::ws, file_path );
@@ -172,65 +172,6 @@ bool GetIsAtmosphere()
     }
 }
 
-void SeriesNetCDFSLAC2KVSML( const std::string& directory, const std::string& base, const std::string& src, const std::string& mode_file_path )
-{
-    std::unordered_map<int, cvt::UnstructuredPfi> pfi_map;
-    cvt::NetCDF::ReaderType reader_type = cvt::NetCDF::ReaderType::SLAC;
-    int layer_thickness = cvt::NetCDF::DefaultMPASLayerThickness; // for MPAS
-    bool is_atmosphere = cvt::NetCDF::DefaultMPASIsAtmosphere; // for MPAS
-
-    cvt::NumeralSequenceFileNames sequence( mode_file_path );
-
-    int last_time_step = sequence.numberOfFiles() - 1;
-    int time_step = 0;
-    int sub_volume_id = 1;
-    int sub_volume_count = 1;
-
-    for ( const auto& filename : sequence.fileNames() )
-    {
-        std::cout << "Reading " << filename << " ..." << std::endl;
-        cvt::NetCDF netcdf( src, reader_type, filename, layer_thickness, is_atmosphere );
-
-        cvt::VtkImporter<cvt::NetCDF> importer( &netcdf );
-        std::cout << "  cell type: " << importer.cellType() << std::endl;
-
-        kvs::UnstructuredVolumeObject* object = &importer;
-        object->print( std::cout, kvs::Indent( 4 ) );
-
-        std::cout << "  Writing to " << directory << " ..." << std::endl;
-        auto local_base = std::string( base ) + "_" + std::to_string( object->cellType() );
-
-        cvt::UnstructuredVolumeObjectExporter exporter( &importer );
-        exporter.setWritingDataTypeToExternalBinary();
-        exporter.write( directory, local_base, time_step, sub_volume_id, sub_volume_count );
-
-        if ( time_step == 0 )
-        {
-            pfi_map.emplace(
-                static_cast<int>( object->cellType() ),
-                cvt::UnstructuredPfi( object->veclen(), last_time_step, sub_volume_count )
-            );
-        }
-
-        pfi_map.at( static_cast<int>( object->cellType() ) ).registerObject( &exporter, time_step, sub_volume_id );
-
-        time_step++;
-    }
-
-    cvt::Pfl pfl;
-    for ( auto& e : pfi_map )
-    {
-        std::string local_base = std::string( base ) + "_" + std::to_string( e.first );
-        e.second.write( directory, local_base );
-        e.second.print( std::cout );
-
-        pfl.registerPfi( directory, local_base );
-    }
-    pfl.write( directory, base );
-
-    return;
-}
-
 void NetCDF2Kvsml( const std::string& directory, const std::string& base, const std::string& src )
 {
     using fs = cvt::filesystem;
@@ -256,7 +197,7 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
-        sub_file_path = GetModeFilePath();
+        sub_file_path = GetMeshFilePath();
     }
     else
     {
@@ -268,8 +209,8 @@ void NetCDF2Kvsml( const std::string& directory, const std::string& base, const 
     {
         if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
         {
-            // SLACは単一メッシュと連番modeファイルの組み合わせを扱う。
-            SeriesNetCDFSLAC2KVSML( directory, base, src, sub_file_path );
+            std::cerr << "The SLAC mesh file does not support wildcards. "
+                      << "vtkSLACReader: " << sub_file_path << std::endl;
             return;
         }
         else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFCAM )
@@ -373,11 +314,13 @@ void SeriesNetCDF2Kvsml( const std::string& directory, const std::string& base, 
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::SLAC )
     {
-        std::cerr << "Wildcards cannot be used in the SLAC mesh file. " << std::endl;
-        std::cerr << "Wildcards can be used in the SLAC mode file. "    << std::endl;
-        std::cerr << "SLAC mesh file: " << src                          << std::endl;
-        std::cerr << "SLAC mode file: " << sub_file_path                << std::endl;
-        return;
+        sub_file_path = GetMeshFilePath();
+        if ( sub_file_path.find_first_of( "*" ) != std::string::npos )
+        {
+            std::cerr << "The SLAC mesh file does not support wildcards. "
+                      << "vtkSLACReader: " << sub_file_path << std::endl;
+            return;
+        }
     }
     else if ( reader_type == cvt::NetCDF::ReaderType::NetCDFUGRID )
     {
