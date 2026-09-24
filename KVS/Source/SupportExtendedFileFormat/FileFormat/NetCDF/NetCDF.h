@@ -92,9 +92,9 @@ public:
     /**
      * Construct an IO.
      *
-     * \param[in] filename A file name.
+     * \param[in] filename A main file path (mode file for SLAC).
      * \param[in] reader_type A reader type.
-     * \param[in] sub_file_path A sub file path (CAM or SLAC).
+     * \param[in] sub_file_path A sub file path (connectivity file for CAM or mesh file for SLAC).
      * \param[in] layer_thickness for MPAS.
      * \param[in] is_atmosphere for MPAS.
      */
@@ -116,9 +116,9 @@ public:
     /**
      * Construct an IO.
      *
-     * \param[in] filename A file name.
+     * \param[in] filename A main file path (mode file for SLAC).
      * \param[in] reader_type A reader type.
-     * \param[in] sub_file_path A sub file path (CAM or SLAC).
+     * \param[in] sub_file_path A sub file path (connectivity file for CAM or mesh file for SLAC).
      * \param[in] layer_thickness for MPAS.
      * \param[in] is_atmosphere for MPAS.
      */
@@ -426,17 +426,17 @@ private:
     }
 
     vtkSmartPointer<vtkUnstructuredGrid> readNetCDFSLAC(
-        const std::string& mesh_file_path,
-        const std::string& mode_file_path )
+        const std::string& mode_file_path,
+        const std::string& mesh_file_path )
     {
-        if ( mesh_file_path.empty() )
-        {
-            throw std::invalid_argument( "SLAC mesh file path is empty." );
-        }
-
         if ( mode_file_path.empty() )
         {
             throw std::invalid_argument( "SLAC mode file path is empty." );
+        }
+
+        if ( mesh_file_path.empty() )
+        {
+            throw std::invalid_argument( "SLAC mesh file path is empty." );
         }
 
         vtkNew<vtkSLACReader> reader;
@@ -593,7 +593,7 @@ private:
 
 private:
     ReaderType m_reader_type;
-    std::string m_sub_file_path; // connectivity file (CAM) or mode file (SLAC)
+    std::string m_sub_file_path; // connectivity file (CAM) or mesh file (SLAC)
     int m_layer_thickness; // for MPAS
     bool m_is_atmosphere; // for MPAS
     vtkSmartPointer<vtkUnstructuredGrid> vtk_data;
