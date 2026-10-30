@@ -3413,9 +3413,9 @@ void EnsembleTransferFunctionTest::runItem17InvalidJson( ItemContext& ctx )
         {
             const StatisticState after = captureStatisticState( client, i );
             QString why;
-            check( result, statesEqual( after, before[static_cast<size_t>( i )], &why ) &&
-                               std::abs( after.server_min - before[static_cast<size_t>( i )].server_min ) < 1.0e-9 &&
-                               std::abs( after.server_max - before[static_cast<size_t>( i )].server_max ) < 1.0e-9,
+            // Server Min/Max は Keep Last によるサーバ応答で更新されるため、Import 前後の不変チェックには含めない。
+            const bool unchanged = statesEqual( after, before[static_cast<size_t>( i )], &why );
+            check( result, unchanged,
                    QStringLiteral( "%1: %2 の GUI 値が変化した(%3)" ).arg( label, after.statistic, why ) );
         }
         selectStatistic( client, index_before );
